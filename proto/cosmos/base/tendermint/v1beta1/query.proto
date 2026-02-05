@@ -2,9 +2,11 @@ syntax = "proto3";
 package cosmos.base.tendermint.v1beta1;
 
 import "amino/amino.proto";
+import "cometbft/abci/v1/types.proto";
 import "cometbft/crypto/v1/proof.proto";
 import "cometbft/p2p/v1/types.proto";
 import "cometbft/types/v1/block.proto";
+import "cometbft/types/v1/params.proto";
 import "cometbft/types/v1/types.proto";
 import "cosmos/base/query/v1beta1/pagination.proto";
 import "cosmos/base/tendermint/v1beta1/types.proto";
@@ -53,6 +55,19 @@ service Service {
   rpc ABCIQuery(ABCIQueryRequest) returns (ABCIQueryResponse) {
     option (google.api.http).get          = "/cosmos/base/tendermint/v1beta1/abci_query";
     option (cosmos_proto.method_added_in) = "cosmos-sdk 0.46";
+  }
+
+  // GetLatestBlockResults queries block results for the latest block.
+  rpc GetLatestBlockResults(GetLatestBlockResultsRequest) returns (GetLatestBlockResultsResponse) {
+    option (google.api.http).get          = "/cosmos/base/tendermint/v1beta1/block_results/latest";
+    option (cosmos_proto.method_added_in) = "cosmos-sdk 0.53";
+  }
+
+  // GetBlockResults queries block results for a given height.
+  // Returns finalize_block_events, tx results, validator updates, and consensus param updates.
+  rpc GetBlockResults(GetBlockResultsRequest) returns (GetBlockResultsResponse) {
+    option (google.api.http).get          = "/cosmos/base/tendermint/v1beta1/block_results/{height}";
+    option (cosmos_proto.method_added_in) = "cosmos-sdk 0.53";
   }
 }
 
@@ -212,4 +227,32 @@ message ProofOp {
 message ProofOps {
   option           deprecated = true;
   repeated ProofOp ops        = 1 [(gogoproto.nullable) = false, (amino.dont_omitempty) = true];
+}
+
+// GetBlockResultsRequest is the request type for the Query/GetBlockResults RPC method.
+message GetBlockResultsRequest {
+  int64 height = 1;
+}
+
+// GetBlockResultsResponse is the response type for the Query/GetBlockResults RPC method.
+message GetBlockResultsResponse {
+  int64                                      height                  = 1;
+  repeated .cometbft.abci.v1.ExecTxResult    txs_results             = 2;
+  repeated .cometbft.abci.v1.Event           finalize_block_events   = 3;
+  repeated .cometbft.abci.v1.ValidatorUpdate validator_updates       = 4;
+  .cometbft.types.v1.ConsensusParams         consensus_param_updates = 5;
+  bytes                                      app_hash                = 6;
+}
+
+// GetLatestBlockResultsRequest is the request type for the Query/GetLatestBlockResults RPC method.
+message GetLatestBlockResultsRequest {}
+
+// GetLatestBlockResultsResponse is the response type for the Query/GetLatestBlockResults RPC method.
+message GetLatestBlockResultsResponse {
+  int64                                      height                  = 1;
+  repeated .cometbft.abci.v1.ExecTxResult    txs_results             = 2;
+  repeated .cometbft.abci.v1.Event           finalize_block_events   = 3;
+  repeated .cometbft.abci.v1.ValidatorUpdate validator_updates       = 4;
+  .cometbft.types.v1.ConsensusParams         consensus_param_updates = 5;
+  bytes                                      app_hash                = 6;
 }

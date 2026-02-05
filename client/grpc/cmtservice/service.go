@@ -244,6 +244,73 @@ func (s queryServer) GetNodeInfo(ctx context.Context, _ *GetNodeInfoRequest) (*G
 	return &resp, nil
 }
 
+// GetBlockResults implements ServiceServer.GetBlockResults
+func (s queryServer) GetBlockResults(ctx context.Context, req *GetBlockResultsRequest) (*GetBlockResultsResponse, error) {
+	blockHeight, err := getBlockHeight(ctx, s.rpc)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.Height > blockHeight {
+		return nil, status.Error(codes.InvalidArgument, "requested block height is bigger than the chain length")
+	}
+
+	results, err := getBlockResults(ctx, s.rpc, &req.Height)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert FinalizeBlockEvents from []Event to []*Event
+	events := make([]*abci.Event, len(results.FinalizeBlockEvents))
+	for i := range results.FinalizeBlockEvents {
+		events[i] = &results.FinalizeBlockEvents[i]
+	}
+
+	// Convert ValidatorUpdates from []ValidatorUpdate to []*ValidatorUpdate
+	valUpdates := make([]*abci.ValidatorUpdate, len(results.ValidatorUpdates))
+	for i := range results.ValidatorUpdates {
+		valUpdates[i] = &results.ValidatorUpdates[i]
+	}
+
+	return &GetBlockResultsResponse{
+		Height:                results.Height,
+		TxsResults:            results.TxResults,
+		FinalizeBlockEvents:   events,
+		ValidatorUpdates:      valUpdates,
+		ConsensusParamUpdates: results.ConsensusParamUpdates,
+		AppHash:               results.AppHash,
+	}, nil
+}
+
+// GetLatestBlockResults implements ServiceServer.GetLatestBlockResults
+func (s queryServer) GetLatestBlockResults(ctx context.Context, _ *GetLatestBlockResultsRequest) (*GetLatestBlockResultsResponse, error) {
+	results, err := getBlockResults(ctx, s.rpc, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert FinalizeBlockEvents from []Event to []*Event
+	events := make([]*abci.Event, len(results.FinalizeBlockEvents))
+	for i := range results.FinalizeBlockEvents {
+		events[i] = &results.FinalizeBlockEvents[i]
+	}
+
+	// Convert ValidatorUpdates from []ValidatorUpdate to []*ValidatorUpdate
+	valUpdates := make([]*abci.ValidatorUpdate, len(results.ValidatorUpdates))
+	for i := range results.ValidatorUpdates {
+		valUpdates[i] = &results.ValidatorUpdates[i]
+	}
+
+	return &GetLatestBlockResultsResponse{
+		Height:                results.Height,
+		TxsResults:            results.TxResults,
+		FinalizeBlockEvents:   events,
+		ValidatorUpdates:      valUpdates,
+		ConsensusParamUpdates: results.ConsensusParamUpdates,
+		AppHash:               results.AppHash,
+	}, nil
+}
+
 func (s queryServer) ABCIQuery(ctx context.Context, req *ABCIQueryRequest) (*ABCIQueryResponse, error) {
 	if s.queryFn == nil {
 		return nil, status.Error(codes.Internal, "ABCI Query handler undefined")

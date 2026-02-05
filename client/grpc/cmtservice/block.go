@@ -33,3 +33,7 @@ func GetProtoBlock(ctx context.Context, rpc CometRPC, height *int64) (cmtproto.B
 
 	return protoBlockID, protoBlock, nil
 }
+
+func getBlockResults(ctx context.Context, rpc CometRPC, height *int64) (*coretypes.ResultBlockResults, error) {
+	return rpc.BlockResults(ctx, height)
+}
