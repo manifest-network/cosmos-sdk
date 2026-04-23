@@ -14,6 +14,11 @@ func (k *Keeper) MintFn(ctx sdk.Context) error {
 	return k.mintFn(ctx, k)
 }
 
+// NoOpMintFn is a MintFn that performs no minting. Used as the default so that
+// the x/mint BeginBlocker does nothing unless a chain explicitly opts in via
+// WithMintFn.
+func NoOpMintFn(_ sdk.Context, _ *Keeper) error { return nil }
+
 // DefaultMintFn returns a default mint function.
 // The default MintFn has a requirement on staking as it uses bond to calculate inflation.
 func DefaultMintFn(ic types.InflationCalculationFn) MintFn {
