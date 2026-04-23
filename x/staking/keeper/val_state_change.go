@@ -163,7 +163,9 @@ func (k Keeper) ApplyAndReturnValidatorSetUpdates(ctx context.Context) (updates 
 		}
 
 		if validator.Jailed {
-			return nil, errors.New("should never retrieve a jailed validator from the power store")
+			// https://github.com/cosmos/cosmos-sdk/pull/20059
+			// return nil, errors.New("should never retrieve a jailed validator from the power store")
+			continue
 		}
 
 		// if we get to a zero-power validator (which we don't bond),
