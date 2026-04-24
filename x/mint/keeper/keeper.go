@@ -72,7 +72,7 @@ func NewKeeper(
 		authority:        authority,
 		Params:           collections.NewItem(sb, types.ParamsKey, "params", codec.CollValue[types.Params](cdc)),
 		Minter:           collections.NewItem(sb, types.MinterKey, "minter", codec.CollValue[types.Minter](cdc)),
-		mintFn:           DefaultMintFn(types.DefaultInflationCalculationFn),
+		mintFn:           NoOpMintFn,
 	}
 
 	schema, err := sb.Build()

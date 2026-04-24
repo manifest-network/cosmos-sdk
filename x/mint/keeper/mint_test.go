@@ -54,7 +54,7 @@ func (s *MintFnTestSuite) SetupTest() {
 	// Return a dummy module address for the mint module.
 	accountKeeper.EXPECT().GetModuleAddress(types.ModuleName).Return(sdk.AccAddress{}).AnyTimes()
 
-	// Override the default mint function with our dummy inflation calculator.
+	// Opt into the inflation-based DefaultMintFn (the keeper's default is NoOpMintFn).
 	s.mintKeeper = keeper.NewKeeper(
 		encCfg.Codec,
 		storeService,
@@ -63,6 +63,7 @@ func (s *MintFnTestSuite) SetupTest() {
 		s.bankKeeper,
 		authtypes.FeeCollectorName,
 		authtypes.NewModuleAddress(govtypes.ModuleName).String(),
+		keeper.WithMintFn(keeper.DefaultMintFn(types.DefaultInflationCalculationFn)),
 	)
 
 	// Set default parameters.
