@@ -99,3 +99,29 @@ Use this test account to manually test against the test network.
 ## Testnet Options
 
 You can customize the configuration of the test network with flags. In order to see all flag options, append the `--help` flag to each command.
+
+## Create a Testnet From Existing State
+
+Applications that register `server.AddTestnetCreatorCommand` and provide an
+application-specific state conversion can expose `in-place-testnet`. This command
+converts a stopped node's local state into a testnet controlled by its local
+validator key and a supplied operator account:
+
+```shell
+simd in-place-testnet my-fork-chain "$OPERATOR_ADDRESS" --home "$FORK_HOME"
+```
+
+Use a disposable copy of the source home with committed blocks and their commit
+records. Prepare a fresh consensus key and reset its signing state, remove the
+copied consensus WAL, and isolate the fork from the source network by clearing
+persistent peers and seeds and disabling peer exchange and state sync.
+
+The conversion replaces the consensus validator set and reconstructs its last
+commit for the new chain ID. When vote extensions are enabled at that height,
+the replacement commit includes a signed empty extension; application-specific
+extension handling must accept that initial payload. The genesis file and the
+genesis document cached by CometBFT both use the new chain ID.
+
+The command starts the testnet immediately. Wait for its first block to commit
+before stopping it, then use the ordinary `start` command for subsequent restarts.
+Run `in-place-testnet` only once on each copied home.

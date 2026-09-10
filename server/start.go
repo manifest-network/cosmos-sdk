@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	cmtdb "github.com/cometbft/cometbft-db"
 	"github.com/cometbft/cometbft/abci/server"
 	cmtcmd "github.com/cometbft/cometbft/cmd/cometbft/commands"
 	cmtcfg "github.com/cometbft/cometbft/config"
@@ -794,6 +795,9 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if err != nil {
 		return nil, err
 	}
+	// The provider can return the genesis document cached in the state database.
+	// Update it as well as the genesis file before saving it below.
+	genDoc.ChainID = newChainID
 
 	ctx.Viper.Set(KeyNewValAddr, validatorAddress)
 	ctx.Viper.Set(KeyUserPubKey, userPubKey)
@@ -837,11 +841,19 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 			if err != nil {
 				return nil, err
 			}
+			if err := blockStoreDB.Delete([]byte(fmt.Sprintf("EC:%v", blockStore.Height()+1))); err != nil {
+				return nil, err
+			}
 		}
 	case blockStore.Height() > state.LastBlockHeight:
 		// This state usually occurs when we gracefully stop the node.
+		deletedHeight := blockStore.Height()
 		err = blockStore.DeleteLatestBlock()
 		if err != nil {
+			return nil, err
+		}
+		// CometBFT's DeleteLatestBlock does not remove extended commits.
+		if err := blockStoreDB.Delete([]byte(fmt.Sprintf("EC:%v", deletedHeight))); err != nil {
 			return nil, err
 		}
 		block = blockStore.LoadBlock(blockStore.Height())
@@ -876,22 +888,12 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	}
 	vote.Signature = voteProto.Signature
 	vote.Timestamp = voteProto.Timestamp
+	vote.Extension = voteProto.Extension
+	vote.ExtensionSignature = voteProto.ExtensionSignature
 
-	// Modify the block's lastCommit to be signed only by our validator
-	block.LastCommit.Signatures[0].ValidatorAddress = validatorAddress
-	block.LastCommit.Signatures[0].Signature = vote.Signature
-	block.LastCommit.Signatures = []cmttypes.CommitSig{block.LastCommit.Signatures[0]}
-
-	// Load the seenCommit of the lastBlockHeight and modify it to be signed from our validator
-	seenCommit := blockStore.LoadSeenCommit(state.LastBlockHeight)
-	seenCommit.BlockID = state.LastBlockID
-	seenCommit.Round = vote.Round
-	seenCommit.Signatures[0].Signature = vote.Signature
-	seenCommit.Signatures[0].ValidatorAddress = validatorAddress
-	seenCommit.Signatures[0].Timestamp = vote.Timestamp
-	seenCommit.Signatures = []cmttypes.CommitSig{seenCommit.Signatures[0]}
-	err = blockStore.SaveSeenCommit(state.LastBlockHeight, seenCommit)
-	if err != nil {
+	// Construct fresh signatures: the original first signature may be absent or
+	// for a nil block. Consensus reconstructs the extended commit when enabled.
+	if err := saveTestnetCommit(blockStoreDB, &vote, state.ConsensusParams.ABCI.VoteExtensionsEnabled(state.LastBlockHeight)); err != nil {
 		return nil, err
 	}
 
@@ -959,6 +961,47 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	}
 
 	return testnetApp, err
+}
+
+// saveTestnetCommit replaces both commit records together. CometBFT does not
+// expose a method for replacing an extended commit at an existing block height.
+func saveTestnetCommit(db cmtdb.DB, vote *cmttypes.Vote, extensionsEnabled bool) error {
+	if !vote.BlockID.IsComplete() {
+		return fmt.Errorf("testnet vote must commit a complete block ID")
+	}
+	extendedCommit := &cmttypes.ExtendedCommit{
+		Height:             vote.Height,
+		Round:              vote.Round,
+		BlockID:            vote.BlockID,
+		ExtendedSignatures: []cmttypes.ExtendedCommitSig{vote.ExtendedCommitSig()},
+	}
+	if extensionsEnabled {
+		if err := extendedCommit.EnsureExtensions(true); err != nil {
+			return fmt.Errorf("invalid testnet vote extension: %w", err)
+		}
+	}
+	seenBytes, err := extendedCommit.ToCommit().ToProto().Marshal()
+	if err != nil {
+		return err
+	}
+	batch := db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(fmt.Sprintf("SC:%v", vote.Height)), seenBytes); err != nil {
+		return err
+	}
+	extendedKey := []byte(fmt.Sprintf("EC:%v", vote.Height))
+	if extensionsEnabled {
+		extendedBytes, err := extendedCommit.ToProto().Marshal()
+		if err != nil {
+			return err
+		}
+		if err := batch.Set(extendedKey, extendedBytes); err != nil {
+			return err
+		}
+	} else if err := batch.Delete(extendedKey); err != nil {
+		return err
+	}
+	return batch.WriteSync()
 }
 
 // addStartNodeFlags should be added to any CLI commands that start the network.
