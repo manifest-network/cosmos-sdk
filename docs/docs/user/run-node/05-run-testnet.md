@@ -105,22 +105,69 @@ You can customize the configuration of the test network with flags. In order to 
 Applications that register `server.AddTestnetCreatorCommand` and provide an
 application-specific state conversion can expose `in-place-testnet`. This command
 converts a stopped node's local state into a testnet controlled by its local
-validator key and a supplied operator account:
+validator key and a supplied operator account. See [Application Testnets](../../build/building-apps/05-app-testnet.md)
+for application wiring. The SDK's `simd` binary does not register this command by
+default; use a binary whose application has implemented the conversion.
+
+### Before Running the Command
+
+Complete these preparation steps manually, before invoking `in-place-testnet`:
+
+1. Stop the source node and make a disposable copy of its home directory. The
+   copy must contain committed blocks and their commit records. Keep a backup of
+   the copy so you can restore it if conversion fails.
+2. Install a fresh local consensus key in the copied home's configured private
+   validator key file (normally `config/priv_validator_key.json`). Do not reuse a
+   production validator key. The command requires this file to exist; it does not
+   generate or replace the key for you.
+3. Replace the copied signing-state file's contents (normally
+   `data/priv_validator_state.json`) with the JSON below. Keep the file present;
+   deleting it does not reset the signing state for this command. Remove any old
+   signature and sign bytes by replacing the complete contents:
+
+   ```json
+   {"height":"0","round":0,"step":0}
+   ```
+
+4. Install a fresh local node key, clear `persistent_peers` and `seeds` in
+   `config/config.toml`, disable peer exchange (`p2p.pex`) and state sync
+   (`statesync.enable`), and isolate the fork's P2P network from the source
+   network. These are operator actions; the command does not perform network
+   isolation or replace the node key.
+5. Choose a distinct chain ID and a local operator account. Follow the
+   application's instructions for its operator account format, signing key,
+   authority settings, and any custom state-conversion requirements.
+
+### Convert and Start the Copied Node
+
+In this example, `APP_BINARY` is the path to your application's registered binary,
+`FORK_HOME` is the prepared disposable home, and `OPERATOR_ADDRESS` is its local
+operator account address:
 
 ```shell
-simd in-place-testnet my-fork-chain "$OPERATOR_ADDRESS" --home "$FORK_HOME"
+"$APP_BINARY" in-place-testnet my-fork-chain "$OPERATOR_ADDRESS" --home "$FORK_HOME"
 ```
 
-Use a disposable copy of the source home with committed blocks and their commit
-records. Prepare a fresh consensus key and reset its signing state, remove the
-copied consensus WAL, and isolate the fork from the source network by clearing
-persistent peers and seeds and disabling peer exchange and state sync.
+The command asks for confirmation before modifying the copied state. Answer
+`y` or `yes` to proceed; use `--skip-confirmation` only when that confirmation
+should be omitted, such as in an automated rehearsal.
+
+Before conversion, the command checks that the consensus key and signing-state
+files exist and can be decoded, and that signing height, round, and step are
+zero with no signature or sign bytes. After these checks pass, it removes the
+configured consensus WAL and its numbered rotation files so copied consensus
+messages cannot be replayed on the fork.
 
 The conversion replaces the consensus validator set and reconstructs its last
 commit for the new chain ID. When vote extensions are enabled at that height,
 the replacement commit includes a signed empty extension; application-specific
 extension handling must accept that initial payload. The genesis file and the
 genesis document cached by CometBFT both use the new chain ID.
+
+The optional `--trigger-testnet-upgrade <handler-name>` flag is passed to the
+application's conversion callback. The application must register the handler and
+implement its scheduling; consult its documentation for the supported name and
+execution height.
 
 The command starts the testnet immediately. Wait for its first block to commit
 before stopping it, then use the ordinary `start` command for subsequent restarts.

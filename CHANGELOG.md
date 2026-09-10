@@ -36,11 +36,11 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 # Changelog
 
-## Unreleased
+## [Unreleased](https://github.com/manifest-network/cosmos-sdk/compare/v0.50.14-liftedinit.1...release/v0.50.14-liftedinit)
 
 ### Bug Fixes
 
-* (server) [ENG-885](https://linear.app/liftedinit/issue/ENG-885) Reconstruct in-place testnet commits with vote extensions and update the cached genesis chain ID.
+* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) Reconstruct in-place testnet commits with vote extensions and update the cached genesis chain ID.
 
 ## [v0.50.14](https://github.com/cosmos/cosmos-sdk/releases/tag/v0.50.14) - 2025-07-08
 

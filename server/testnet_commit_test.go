@@ -31,10 +31,10 @@ func TestSaveTestnetCommitReconstructsConsensus(t *testing.T) {
 				}
 				staleBytes, err := stale.ToProto().Marshal()
 				require.NoError(t, err)
-				require.NoError(t, db.Set([]byte("EC:42"), staleBytes))
+				require.NoError(t, db.Set(testnetExtendedCommitKey(vote.Height), staleBytes))
 				seenBytes, err := stale.ToCommit().ToProto().Marshal()
 				require.NoError(t, err)
-				require.NoError(t, db.Set([]byte("SC:42"), seenBytes))
+				require.NoError(t, db.Set(testnetSeenCommitKey(vote.Height), seenBytes))
 
 				require.NoError(t, saveTestnetCommit(db, vote, extensionsEnabled))
 				blockStore := store.NewBlockStore(db)
@@ -65,18 +65,18 @@ func TestSaveTestnetCommitRejectsInvalidVoteWithoutWriting(t *testing.T) {
 			db := cmtdb.NewMemDB()
 			t.Cleanup(func() { require.NoError(t, db.Close()) })
 			vote, _ := signedTestnetVote(t)
-			require.NoError(t, db.Set([]byte("SC:42"), []byte("original seen commit")))
-			require.NoError(t, db.Set([]byte("EC:42"), []byte("original extended commit")))
+			require.NoError(t, db.Set(testnetSeenCommitKey(vote.Height), []byte("original seen commit")))
+			require.NoError(t, db.Set(testnetExtendedCommitKey(vote.Height), []byte("original extended commit")))
 			if missingBlockID {
 				vote.BlockID = cmttypes.BlockID{}
 			} else {
 				vote.ExtensionSignature = nil
 			}
 			require.Error(t, saveTestnetCommit(db, vote, true))
-			seen, err := db.Get([]byte("SC:42"))
+			seen, err := db.Get(testnetSeenCommitKey(vote.Height))
 			require.NoError(t, err)
 			require.Equal(t, []byte("original seen commit"), seen)
-			extended, err := db.Get([]byte("EC:42"))
+			extended, err := db.Get(testnetExtendedCommitKey(vote.Height))
 			require.NoError(t, err)
 			require.Equal(t, []byte("original extended commit"), extended)
 		})
