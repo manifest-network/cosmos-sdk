@@ -10,15 +10,16 @@ import (
 	"strings"
 
 	cmtdb "github.com/cometbft/cometbft-db"
+	abci "github.com/cometbft/cometbft/abci/types"
 	cmtjson "github.com/cometbft/cometbft/libs/json"
 	pvm "github.com/cometbft/cometbft/privval"
+	cmtstate "github.com/cometbft/cometbft/proto/tendermint/state"
 	sm "github.com/cometbft/cometbft/state"
 	"github.com/cometbft/cometbft/store"
 )
 
-// CometBFT v0.38 does not expose keys for rewriting its cached genesis or an
-// existing extended commit. Keep this compatibility boundary shared by
-// conversion, cleanup and tests.
+// CometBFT v0.38 does not expose these database keys. Keep this compatibility
+// boundary shared by conversion, cleanup and tests.
 func testnetGenesisDocKey() []byte {
 	return []byte("genesisDoc")
 }
@@ -29,6 +30,14 @@ func testnetSeenCommitKey(height int64) []byte {
 
 func testnetExtendedCommitKey(height int64) []byte {
 	return []byte(fmt.Sprintf("EC:%v", height))
+}
+
+func testnetLastABCIResponseKey() []byte {
+	return []byte("lastABCIResponseKey")
+}
+
+func testnetPendingEvidencePrefix() []byte {
+	return []byte{0x01}
 }
 
 func validateTestnetStoreHeights(stateHeight, storeHeight int64) error {
@@ -63,7 +72,7 @@ func reconcileTestnetHeight(appHeight, stateHeight, storeHeight int64) (height i
 // application committed the last block but CometBFT did not save state, recover
 // the metadata that CometBFT's updateState derives from that block and its saved
 // FinalizeBlock response. The caller replaces all three validator sets afterwards.
-func reconcileTestnetState(state sm.State, stateStore sm.Store, blockStore *store.BlockStore, appHeight int64, appHash []byte) (sm.State, bool, error) {
+func reconcileTestnetState(state sm.State, stateDB cmtdb.DB, stateStore sm.Store, blockStore *store.BlockStore, appHeight int64, appHash []byte) (sm.State, bool, error) {
 	height, rollback, err := reconcileTestnetHeight(appHeight, state.LastBlockHeight, blockStore.Height())
 	if err != nil {
 		return state, false, err
@@ -85,7 +94,7 @@ func reconcileTestnetState(state sm.State, stateStore sm.Store, blockStore *stor
 	if !block.LastBlockID.Equals(state.LastBlockID) || !bytes.Equal(block.AppHash, state.AppHash) {
 		return state, false, fmt.Errorf("committed block at height %d does not extend the source state", height)
 	}
-	response, err := stateStore.LoadLastFinalizeBlockResponse(height)
+	response, err := loadTestnetLastFinalizeBlockResponse(stateDB, stateStore, height)
 	if err != nil {
 		return state, false, fmt.Errorf("load committed block response at height %d: %w", height, err)
 	}
@@ -120,6 +129,59 @@ func reconcileTestnetState(state sm.State, stateStore sm.Store, blockStore *stor
 	state.LastResultsHash = sm.TxResultsHash(response.TxResults)
 	state.AppHash = bytes.Clone(appHash)
 	return state, false, nil
+}
+
+// CometBFT's public loader exits the process for malformed protobuf data and
+// panics when both response fields are missing. Validate the persisted record
+// first, then retain the public loader's conversion of legacy ABCI responses.
+func loadTestnetLastFinalizeBlockResponse(db cmtdb.DB, stateStore sm.Store, height int64) (*abci.ResponseFinalizeBlock, error) {
+	data, err := db.Get(testnetLastABCIResponseKey())
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("no last ABCI response has been persisted")
+	}
+	var info cmtstate.ABCIResponsesInfo
+	if err := info.Unmarshal(data); err != nil {
+		return nil, fmt.Errorf("decode last ABCI response: %w", err)
+	}
+	if info.ResponseFinalizeBlock == nil && info.LegacyAbciResponses == nil {
+		return nil, fmt.Errorf("last ABCI response contains no response")
+	}
+	return stateStore.LoadLastFinalizeBlockResponse(height)
+}
+
+// Pending evidence belongs to the source chain and must not be proposed after
+// its validator history changes. Preserve the separate committed-evidence keys.
+func deleteTestnetPendingEvidence(db cmtdb.DB) error {
+	iterator, err := cmtdb.IteratePrefix(db, testnetPendingEvidencePrefix())
+	if err != nil {
+		return fmt.Errorf("iterate source pending evidence: %w", err)
+	}
+	var keys [][]byte
+	for ; iterator.Valid(); iterator.Next() {
+		keys = append(keys, bytes.Clone(iterator.Key()))
+	}
+	iteratorErr := iterator.Error()
+	closeErr := iterator.Close()
+	if iteratorErr != nil {
+		return fmt.Errorf("iterate source pending evidence: %w", iteratorErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close source evidence iterator: %w", closeErr)
+	}
+	batch := db.NewBatch()
+	defer batch.Close()
+	for _, key := range keys {
+		if err := batch.Delete(key); err != nil {
+			return fmt.Errorf("delete source pending evidence: %w", err)
+		}
+	}
+	if err := batch.WriteSync(); err != nil {
+		return fmt.Errorf("save source pending evidence cleanup: %w", err)
+	}
+	return nil
 }
 
 func deleteTestnetCommits(db cmtdb.DB, height int64) error {
@@ -203,7 +265,8 @@ func loadTestnetPrivValidator(keyPath, statePath string) (validator *pvm.FilePV,
 // Remove only the configured WAL and its numeric rotation files, which CometBFT
 // can also replay. A custom WAL directory may contain unrelated files.
 func removeTestnetWAL(walPath string) error {
-	entries, err := os.ReadDir(filepath.Dir(walPath))
+	walDir := filepath.Dir(walPath)
+	entries, err := os.ReadDir(walDir)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -212,6 +275,9 @@ func removeTestnetWAL(walPath string) error {
 	}
 	base := filepath.Base(walPath)
 	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
 		name := entry.Name()
 		if name != base {
 			suffix, found := strings.CutPrefix(name, base+".")
@@ -219,7 +285,7 @@ func removeTestnetWAL(walPath string) error {
 				continue
 			}
 		}
-		if err := os.Remove(filepath.Join(filepath.Dir(walPath), name)); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(filepath.Join(walDir, name)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove source consensus WAL: %w", err)
 		}
 	}

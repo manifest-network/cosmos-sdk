@@ -811,14 +811,22 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if err != nil {
 		return nil, fmt.Errorf("query testnet application height: %w", err)
 	}
-	state, rollback, err := reconcileTestnetState(state, stateStore, blockStore, res.LastBlockHeight, res.LastBlockAppHash)
+	state, rollback, err := reconcileTestnetState(state, stateDB, stateStore, blockStore, res.LastBlockHeight, res.LastBlockAppHash)
 	if err != nil {
 		return nil, err
 	}
 	height := state.LastBlockHeight
+	evidenceDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "evidence", Config: config})
+	if err != nil {
+		return nil, fmt.Errorf("open source evidence database: %w", err)
+	}
+	defer evidenceDB.Close()
 
 	// Preflight is complete. These writes span files and independent databases;
 	// the conversion as a whole is not atomic and requires a disposable home.
+	if err := deleteTestnetPendingEvidence(evidenceDB); err != nil {
+		return nil, err
+	}
 	if err := removeTestnetWAL(config.Consensus.WalFile()); err != nil {
 		return nil, err
 	}
@@ -826,6 +834,9 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 		return nil, err
 	}
 	addrBookPath := filepath.Join(config.RootDir, "config", "addrbook.json")
+	if err := os.Remove(addrBookPath); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("remove source addrbook.json: %w", err)
+	}
 	if err := os.WriteFile(addrBookPath, []byte("{}"), 0o600); err != nil {
 		return nil, fmt.Errorf("replace addrbook.json: %w", err)
 	}

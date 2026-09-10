@@ -301,6 +301,7 @@ type testnetStateFixture struct {
 	application   *testnetInfoApplication
 	creatorCalled bool
 	forkKey       cmttypes.Address
+	sourceSigner  cmttypes.PrivValidator
 	blockIDs      map[int64]cmttypes.BlockID
 	blockTimes    map[int64]time.Time
 	finalized     *abci.ResponseFinalizeBlock
@@ -351,7 +352,7 @@ func newTestnetStateFixture(t *testing.T, stateHeight, storeHeight, appHeight in
 	require.NoError(t, err)
 	f := &testnetStateFixture{
 		ctx: ctx, appDB: dbm.NewMemDB(), application: &testnetInfoApplication{height: appHeight},
-		forkKey: forkKey.Address(), blockIDs: make(map[int64]cmttypes.BlockID), blockTimes: make(map[int64]time.Time),
+		forkKey: forkKey.Address(), sourceSigner: sourcePV, blockIDs: make(map[int64]cmttypes.BlockID), blockTimes: make(map[int64]time.Time),
 	}
 	t.Cleanup(func() { require.NoError(t, f.appDB.Close()) })
 	blockDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "blockstore", Config: ctx.Config})
