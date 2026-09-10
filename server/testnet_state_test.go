@@ -399,7 +399,7 @@ func newTestnetStateFixture(t *testing.T, stateHeight, storeHeight, appHeight in
 	require.NoError(t, stateStore.Bootstrap(state))
 	genesisBytes, err := cmtjson.Marshal(genDoc)
 	require.NoError(t, err)
-	require.NoError(t, stateDB.SetSync([]byte("genesisDoc"), genesisBytes))
+	require.NoError(t, stateDB.SetSync(testnetGenesisDocKey(), genesisBytes))
 	f.finalized = &abci.ResponseFinalizeBlock{
 		AppHash:   testnetAppHash(storeHeight),
 		TxResults: []*abci.ExecTxResult{{Code: 0, GasWanted: 10, GasUsed: 8}},
