@@ -124,7 +124,7 @@ func TestTestnetifyPreservesAppStateWithDifferentGenesisFormatting(t *testing.T)
 	require.JSONEq(t, string(appState), string(cachedBefore.AppState))
 	stateDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "state", Config: f.ctx.Config})
 	require.NoError(t, err)
-	require.NoError(t, stateDB.SetSync([]byte("genesisDoc"), cachedBytes))
+	require.NoError(t, stateDB.SetSync(testnetGenesisDocKey(), cachedBytes))
 	require.NoError(t, stateDB.Close())
 
 	_, err = testnetify(f.ctx, f.creator, f.appDB, nil)

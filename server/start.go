@@ -781,7 +781,7 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	}
 
 	// Read the cached document without the node provider's write-on-miss behavior.
-	cachedGenesis, err := stateDB.Get([]byte("genesisDoc"))
+	cachedGenesis, err := stateDB.Get(testnetGenesisDocKey())
 	if err != nil {
 		return nil, err
 	}
@@ -898,7 +898,7 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if err != nil {
 		return nil, err
 	}
-	if err := stateDB.SetSync([]byte("genesisDoc"), b); err != nil {
+	if err := stateDB.SetSync(testnetGenesisDocKey(), b); err != nil {
 		return nil, err
 	}
 

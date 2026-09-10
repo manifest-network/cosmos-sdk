@@ -16,8 +16,13 @@ import (
 	"github.com/cometbft/cometbft/store"
 )
 
-// CometBFT v0.38 does not expose keys for replacing an existing extended commit.
-// Keep this compatibility boundary shared by replacement, cleanup and tests.
+// CometBFT v0.38 does not expose keys for rewriting its cached genesis or an
+// existing extended commit. Keep this compatibility boundary shared by
+// conversion, cleanup and tests.
+func testnetGenesisDocKey() []byte {
+	return []byte("genesisDoc")
+}
+
 func testnetSeenCommitKey(height int64) []byte {
 	return []byte(fmt.Sprintf("SC:%v", height))
 }
