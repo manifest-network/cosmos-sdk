@@ -21,6 +21,25 @@ import (
 
 func TestTestnetifyClearsPendingEvidencePreservingCommitted(t *testing.T) {
 	f := newTestnetStateFixture(t, 3, 3, 3, true)
+	committed, committedRecords := seedTestnetEvidence(t, f)
+	_, err := testnetify(f.ctx, f.creator, f.appDB, nil)
+	require.NoError(t, err)
+	evidenceDB := openTestnetDB(t, f.ctx.Config, "evidence")
+	require.Equal(t, committedRecords, testnetDBContents(t, evidenceDB))
+	pool, err := evidence.NewPool(evidenceDB,
+		sm.NewStore(openTestnetDB(t, f.ctx.Config, "state"), sm.StoreOptions{}),
+		store.NewBlockStore(openTestnetDB(t, f.ctx.Config, "blockstore")))
+	require.NoError(t, err)
+	proposalEvidence, _ := pool.PendingEvidence(-1)
+	require.Empty(t, proposalEvidence)
+	// Comet must still reject evidence already committed on the source chain.
+	require.ErrorContains(t, pool.CheckEvidence(cmttypes.EvidenceList{committed}), "already committed")
+	proposalEvidence, _ = pool.PendingEvidence(-1)
+	require.Empty(t, proposalEvidence)
+}
+
+func seedTestnetEvidence(t *testing.T, f *testnetStateFixture) (*cmttypes.DuplicateVoteEvidence, map[string][]byte) {
+	t.Helper()
 	stateDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "state", Config: f.ctx.Config})
 	require.NoError(t, err)
 	blockDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "blockstore", Config: f.ctx.Config})
@@ -28,13 +47,14 @@ func TestTestnetifyClearsPendingEvidencePreservingCommitted(t *testing.T) {
 	evidenceDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "evidence", Config: f.ctx.Config})
 	require.NoError(t, err)
 	stateStore := sm.NewStore(stateDB, sm.StoreOptions{})
-	pool, err := evidence.NewPool(evidenceDB, stateStore, store.NewBlockStore(blockDB))
-	require.NoError(t, err)
-	committed, err := cmttypes.NewMockDuplicateVoteEvidenceWithValidator(3, f.blockTimes[3], f.sourceSigner, "source-chain")
-	require.NoError(t, err)
-	require.NoError(t, pool.AddEvidence(committed))
 	state, err := stateStore.Load()
 	require.NoError(t, err)
+	height := state.LastBlockHeight
+	pool, err := evidence.NewPool(evidenceDB, stateStore, store.NewBlockStore(blockDB))
+	require.NoError(t, err)
+	committed, err := cmttypes.NewMockDuplicateVoteEvidenceWithValidator(height, f.blockTimes[height], f.sourceSigner, state.ChainID)
+	require.NoError(t, err)
+	require.NoError(t, pool.AddEvidence(committed))
 	state.LastBlockHeight++
 	state.LastBlockTime = state.LastBlockTime.Add(time.Second)
 	pool.Update(state, cmttypes.EvidenceList{committed})
@@ -42,7 +62,7 @@ func TestTestnetifyClearsPendingEvidencePreservingCommitted(t *testing.T) {
 	require.Len(t, committedRecords, 1)
 	// Seed through Comet's pool rather than copying its private key format.
 	// This exercises the real v0.38.12 pending/committed prefix distinction.
-	pending, err := cmttypes.NewMockDuplicateVoteEvidenceWithValidator(3, f.blockTimes[3], f.sourceSigner, "source-chain")
+	pending, err := cmttypes.NewMockDuplicateVoteEvidenceWithValidator(height, f.blockTimes[height], f.sourceSigner, state.ChainID)
 	require.NoError(t, err)
 	require.NoError(t, pool.AddEvidence(pending))
 	proposalEvidence, _ := pool.PendingEvidence(-1)
@@ -52,45 +72,118 @@ func TestTestnetifyClearsPendingEvidencePreservingCommitted(t *testing.T) {
 	require.NoError(t, pool.Close())
 	require.NoError(t, stateDB.Close())
 	require.NoError(t, blockDB.Close())
-
-	_, err = testnetify(f.ctx, f.creator, f.appDB, nil)
-	require.NoError(t, err)
-	evidenceDB = openTestnetDB(t, f.ctx.Config, "evidence")
-	require.Equal(t, committedRecords, testnetDBContents(t, evidenceDB))
-	pool, err = evidence.NewPool(evidenceDB,
-		sm.NewStore(openTestnetDB(t, f.ctx.Config, "state"), sm.StoreOptions{}),
-		store.NewBlockStore(openTestnetDB(t, f.ctx.Config, "blockstore")))
-	require.NoError(t, err)
-	proposalEvidence, _ = pool.PendingEvidence(-1)
-	require.Empty(t, proposalEvidence)
-	// Comet must still reject evidence already committed on the source chain.
-	require.ErrorContains(t, pool.CheckEvidence(cmttypes.EvidenceList{committed}), "already committed")
-	proposalEvidence, _ = pool.PendingEvidence(-1)
-	require.Empty(t, proposalEvidence)
+	return committed, committedRecords
 }
 
-func TestTestnetifyReplacesReadOnlyAddrbook(t *testing.T) {
+func TestTestnetifyReplacesAddrbookAtConfiguredPath(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		path     string
+		absolute bool
+		absent   bool
+	}{
+		{name: "default read only"},
+		{name: "relative read only", path: filepath.Join("custom", "addrbook.json")},
+		{name: "absolute read only", absolute: true},
+		{name: "absent", path: filepath.Join("custom", "missing.json"), absent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTestnetStateFixture(t, 3, 3, 3, true)
+			defaultPath := f.ctx.Config.P2P.AddrBookFile()
+			original, err := os.ReadFile(defaultPath)
+			require.NoError(t, err)
+			if tc.absolute {
+				f.ctx.Config.P2P.AddrBook = filepath.Join(t.TempDir(), "addrbook.json")
+			} else if tc.path != "" {
+				f.ctx.Config.P2P.AddrBook = tc.path
+			}
+			path := f.ctx.Config.P2P.AddrBookFile()
+			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			var oldFile *os.File
+			if tc.absent {
+				_, err := os.Stat(path)
+				require.ErrorIs(t, err, os.ErrNotExist)
+			} else {
+				require.NoError(t, os.WriteFile(path, original, 0o600))
+				require.NoError(t, os.Chmod(path, 0o400))
+				oldFile, err = os.Open(path)
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, oldFile.Close()) })
+			}
+			_, err = testnetify(f.ctx, f.creator, f.appDB, nil)
+			require.NoError(t, err)
+			replacement, err := os.ReadFile(path)
+			require.NoError(t, err)
+			require.JSONEq(t, `{}`, string(replacement))
+			info, err := os.Stat(path)
+			require.NoError(t, err)
+			require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+			if oldFile != nil {
+				// An open descriptor proves replacement even when elevated tests
+				// could overwrite a read-only file in place.
+				originalAfter, err := io.ReadAll(oldFile)
+				require.NoError(t, err)
+				require.Equal(t, original, originalAfter)
+			}
+			if path != defaultPath {
+				defaultAfter, err := os.ReadFile(defaultPath)
+				require.NoError(t, err)
+				require.Equal(t, original, defaultAfter)
+			}
+		})
+	}
+}
+
+func TestTestnetifyInvalidSigningStatePreservesPendingEvidence(t *testing.T) {
 	f := newTestnetStateFixture(t, 3, 3, 3, true)
-	path := filepath.Join(f.ctx.Config.RootDir, "config", "addrbook.json")
-	original, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.NoError(t, os.Chmod(path, 0o400))
-	oldFile, err := os.Open(path)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, oldFile.Close()) })
-	_, err = testnetify(f.ctx, f.creator, f.appDB, nil)
-	require.NoError(t, err)
-	replacement, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.JSONEq(t, `{}`, string(replacement))
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-	// Holding the old file open also proves replacement when tests run with
-	// privileges that would otherwise allow overwriting a read-only file.
-	originalAfter, err := io.ReadAll(oldFile)
-	require.NoError(t, err)
-	require.Equal(t, original, originalAfter)
+	seedTestnetEvidence(t, f)
+	require.NoError(t, os.WriteFile(f.ctx.Config.PrivValidatorStateFile(), []byte(`{"height":"3","round":0,"step":0}`), 0o600))
+	filesBefore := snapshotTestnetFiles(t, f)
+	storesBefore := snapshotTestnetStores(t, f.ctx.Config, "evidence")
+	_, err := testnetify(f.ctx, f.creator, f.appDB, nil)
+	require.Error(t, err)
+	require.False(t, f.creatorCalled)
+	require.Equal(t, filesBefore, snapshotTestnetFiles(t, f))
+	require.Equal(t, storesBefore, snapshotTestnetStores(t, f.ctx.Config, "evidence"))
+}
+
+func TestDeleteTestnetPendingEvidenceFlushesAndRetries(t *testing.T) {
+	f := newTestnetStateFixture(t, 3, 3, 3, true)
+	_, committedRecords := seedTestnetEvidence(t, f)
+	db := openTestnetDB(t, f.ctx.Config, "evidence")
+	before := testnetDBContents(t, db)
+	tracking := &testnetSyncFailureDB{DB: db, failSyncWrite: 1}
+	require.ErrorIs(t, deleteTestnetPendingEvidence(tracking), errTestnetSyncFailure)
+	require.Equal(t, before, testnetDBContents(t, db))
+	require.NoError(t, deleteTestnetPendingEvidence(tracking))
+	require.Equal(t, 2, tracking.syncWrites)
+	require.Zero(t, tracking.asyncWrites)
+	require.Equal(t, committedRecords, testnetDBContents(t, db))
+}
+
+func TestDeleteTestnetPendingEvidenceAbortsOnIteratorErrors(t *testing.T) {
+	for _, closeFailure := range []bool{false, true} {
+		name := "iterator creation"
+		if closeFailure {
+			name = "iterator close"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newTestnetStateFixture(t, 3, 3, 3, true)
+			seedTestnetEvidence(t, f)
+			db := openTestnetDB(t, f.ctx.Config, "evidence")
+			before := testnetDBContents(t, db)
+			tracking := &testnetSyncFailureDB{DB: db}
+			if closeFailure {
+				tracking.iteratorCloseError = errTestnetSyncFailure
+			} else {
+				tracking.iteratorError = errTestnetSyncFailure
+			}
+			require.ErrorIs(t, deleteTestnetPendingEvidence(tracking), errTestnetSyncFailure)
+			require.Zero(t, tracking.syncWrites)
+			require.Zero(t, tracking.asyncWrites)
+			require.Equal(t, before, testnetDBContents(t, db))
+		})
+	}
 }
 
 func TestRemoveTestnetWALPreservesMatchingDirectories(t *testing.T) {
@@ -146,6 +239,7 @@ func TestTestnetifyRejectsInvalidLastFinalizeResponse(t *testing.T) {
 	const scenarioVariable = "SDK_TESTNET_INVALID_RESPONSE_SCENARIO"
 	if scenario := os.Getenv(scenarioVariable); scenario != "" {
 		f := newTestnetStateFixture(t, 3, 4, 4, true)
+		seedTestnetEvidence(t, f)
 		db, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "state", Config: f.ctx.Config})
 		require.NoError(t, err)
 		switch scenario {
@@ -165,17 +259,18 @@ func TestTestnetifyRejectsInvalidLastFinalizeResponse(t *testing.T) {
 		}
 		require.NoError(t, db.Close())
 		filesBefore := snapshotTestnetFiles(t, f)
-		storesBefore := snapshotTestnetStores(t, f.ctx.Config)
+		storesBefore := snapshotTestnetStores(t, f.ctx.Config, "evidence")
 		_, err = testnetify(f.ctx, f.creator, f.appDB, nil)
 		require.Error(t, err)
 		require.True(t, f.creatorCalled, "the app must report its committed height before halt recovery")
 		require.Equal(t, filesBefore, snapshotTestnetFiles(t, f))
-		require.Equal(t, storesBefore, snapshotTestnetStores(t, f.ctx.Config))
+		require.Equal(t, storesBefore, snapshotTestnetStores(t, f.ctx.Config, "evidence"))
 		return
 	}
-	// Comet's unguarded loader exits on malformed proto and panics on an empty
-	// response payload. Run each case in a child so a regression cannot abort
-	// the surrounding suite, and require normal test completion in that child.
+	// Missing records and empty bytes retain Comet's existing error behavior.
+	// Malformed proto and missing response payload exercise the added guard:
+	// Comet's unguarded loader exits or panics. Isolate each case in a child
+	// and require normal test completion without deleting source evidence.
 	for _, scenario := range []string{"missing", "empty bytes", "malformed proto", "empty response payload"} {
 		t.Run(scenario, func(t *testing.T) {
 			command := exec.Command(os.Args[0], "-test.run=^TestTestnetifyRejectsInvalidLastFinalizeResponse$", "-test.v")

@@ -443,7 +443,7 @@ type testnetFileSnapshot struct {
 func snapshotTestnetFiles(t *testing.T, f *testnetStateFixture) map[string]testnetFileSnapshot {
 	t.Helper()
 	files := make(map[string]testnetFileSnapshot)
-	for _, path := range []string{f.ctx.Config.GenesisFile(), f.ctx.Config.PrivValidatorKeyFile(), f.ctx.Config.PrivValidatorStateFile(), filepath.Join(f.ctx.Config.RootDir, "config", "addrbook.json")} {
+	for _, path := range []string{f.ctx.Config.GenesisFile(), f.ctx.Config.PrivValidatorKeyFile(), f.ctx.Config.PrivValidatorStateFile(), f.ctx.Config.P2P.AddrBookFile()} {
 		info, err := os.Stat(path)
 		if os.IsNotExist(err) {
 			continue
@@ -456,10 +456,10 @@ func snapshotTestnetFiles(t *testing.T, f *testnetStateFixture) map[string]testn
 	return files
 }
 
-func snapshotTestnetStores(t *testing.T, config *cmtcfg.Config) map[string]map[string][]byte {
+func snapshotTestnetStores(t *testing.T, config *cmtcfg.Config, additionalStores ...string) map[string]map[string][]byte {
 	t.Helper()
 	contents := make(map[string]map[string][]byte)
-	for _, name := range []string{"state", "blockstore"} {
+	for _, name := range append([]string{"state", "blockstore"}, additionalStores...) {
 		db, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: name, Config: config})
 		require.NoError(t, err)
 		contents[name] = testnetDBContents(t, db)
@@ -488,6 +488,8 @@ type testnetSyncFailureDB struct {
 	failKey                 []byte
 	fail                    bool
 	failSyncWrite           int
+	iteratorError           error
+	iteratorCloseError      error
 	syncWrites, asyncWrites int
 }
 
@@ -505,6 +507,29 @@ func (db *testnetSyncFailureDB) DeleteSync(key []byte) error {
 
 func (db *testnetSyncFailureDB) NewBatch() cmtdb.Batch {
 	return &testnetSyncFailureBatch{Batch: db.DB.NewBatch(), db: db}
+}
+
+func (db *testnetSyncFailureDB) Iterator(start, end []byte) (cmtdb.Iterator, error) {
+	if db.iteratorError != nil {
+		return nil, db.iteratorError
+	}
+	iterator, err := db.DB.Iterator(start, end)
+	if err != nil || db.iteratorCloseError == nil {
+		return iterator, err
+	}
+	return &testnetCloseFailureIterator{Iterator: iterator, err: db.iteratorCloseError}, nil
+}
+
+type testnetCloseFailureIterator struct {
+	cmtdb.Iterator
+	err error
+}
+
+func (iterator *testnetCloseFailureIterator) Close() error {
+	if err := iterator.Iterator.Close(); err != nil {
+		return err
+	}
+	return iterator.err
 }
 
 type testnetSyncFailureBatch struct {

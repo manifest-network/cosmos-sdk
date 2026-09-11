@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
 	"runtime/pprof"
 	"strings"
 	"time"
@@ -816,14 +815,16 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 		return nil, err
 	}
 	height := state.LastBlockHeight
+
+	// Preflight is complete. Opening the evidence database can create files.
+	// These writes span files and independent databases; the conversion as a
+	// whole is not atomic and requires a disposable home.
 	evidenceDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "evidence", Config: config})
 	if err != nil {
 		return nil, fmt.Errorf("open source evidence database: %w", err)
 	}
 	defer evidenceDB.Close()
 
-	// Preflight is complete. These writes span files and independent databases;
-	// the conversion as a whole is not atomic and requires a disposable home.
 	if err := deleteTestnetPendingEvidence(evidenceDB); err != nil {
 		return nil, err
 	}
@@ -833,7 +834,7 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if err := appGen.SaveAs(genFilePath); err != nil {
 		return nil, err
 	}
-	addrBookPath := filepath.Join(config.RootDir, "config", "addrbook.json")
+	addrBookPath := config.P2P.AddrBookFile()
 	if err := os.Remove(addrBookPath); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("remove source addrbook.json: %w", err)
 	}

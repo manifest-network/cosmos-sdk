@@ -40,7 +40,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ### CLI Breaking
 
-* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) `in-place-testnet` requires operators to provide a complete fresh validator key file and an existing reset signing-state file. Missing validator keys are no longer generated automatically. After preflight, it deletes the configured consensus WAL and its numbered rotation files from the copied home.
+* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) `in-place-testnet` requires a complete validator key file and an existing reset signing-state file; operators must supply a fresh key. Missing validator keys are no longer generated automatically. Preflight rejects unsupported or inconsistent source heights. After preflight, it deletes the configured consensus WAL and its numbered rotation files from the copied home.
 
 ### Bug Fixes
 
