@@ -143,14 +143,15 @@ Complete these preparation steps manually, before invoking `in-place-testnet`:
    configuration for absolute filesystem paths, including `genesis_file`,
    `db_dir`, `priv_validator_state_file`, and address-book and consensus WAL paths.
    They are used as-is and are not confined to the copied home by `--home`;
-   redirect them into the disposable copy before proceeding. The configured
-   `p2p.addr_book_file` must be nonempty and name a dedicated address-book file
-   separate from the genesis, key, and signing-state files. Set absolute values
-   explicitly to the intended clean file path, without trailing separators or
-   redundant components such as `.` or `..`. Conversion rejects noncanonical
-   absolute values without rewriting them; CometBFT normalizes relative values
-   when resolving them. You must ensure its parent directory, or nearest existing
-   ancestor when parents are missing, is writable by the process running
+   redirect them into the disposable copy before proceeding. The command requires
+   a nonempty `p2p.addr_book_file`. You must choose a dedicated file separate from
+   genesis, validator-key, signing-state, node-key, and WAL files: the command does
+   not check for path collisions and can overwrite a file at this path with `{}`.
+   Set absolute values explicitly to the intended clean file path, without
+   trailing separators or redundant components such as `.` or `..`.
+   The command does not rewrite absolute values; CometBFT normalizes relative
+   values when resolving them. You must ensure its parent directory, or nearest
+   existing ancestor when parents are missing, is writable by the process running
    conversion.
 2. Install a fresh local consensus key in the copied home's configured private
    validator key file (normally `config/priv_validator_key.json`). Do not reuse a
@@ -192,11 +193,12 @@ The command asks for confirmation before modifying the copied state. Answer
 `y` or `yes` to proceed; use `--skip-confirmation` only when that confirmation
 should be omitted, such as in an automated rehearsal.
 
-Before conversion, the command rejects an empty address-book setting, a resolved
-path that is not already clean, directory targets, and inspection errors other
-than missing paths. It also checks that the consensus key and signing-state files
-exist and can be decoded, and that signing height, round, and step are zero with
-no signature or sign bytes.
+Before conversion, the command rejects an empty address-book setting or a
+resolved path that is not already clean. It inspects the path, rejects errors
+other than missing paths, and rejects an existing directory target. It also checks
+that the consensus key and signing-state files exist and can be decoded, and that
+signing height, round, and step are zero with no signature or sign bytes. It loads
+the genesis file and validates and completes its document using the new chain ID.
 
 After preflight succeeds, it first creates any missing parent directories for the
 configured address-book path. It removes the configured consensus WAL and its
