@@ -739,6 +739,9 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 		return nil, fmt.Errorf("in-place-testnet requires a non-empty p2p.addr_book_file")
 	}
 	addrBookPath := config.P2P.AddrBookFile()
+	if cleanPath := filepath.Clean(addrBookPath); addrBookPath != cleanPath {
+		return nil, fmt.Errorf("configured p2p.addr_book_file %q must be a clean file path; use %q", addrBookPath, cleanPath)
+	}
 	addrBookInfo, err := os.Stat(addrBookPath)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("inspect configured address book: %w", err)

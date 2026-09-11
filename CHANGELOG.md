@@ -40,11 +40,11 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ### CLI Breaking
 
-* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) `in-place-testnet` requires a complete validator key file and an existing reset signing-state file; operators must supply a fresh key. Missing validator keys are no longer generated automatically. Preflight rejects unsupported or inconsistent source heights. After preflight, it deletes the configured consensus WAL and its numbered rotation files.
+* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) `in-place-testnet` requires a complete validator key file and an existing reset signing-state file; operators must supply a fresh key. Missing validator keys are no longer generated automatically. Preflight rejects unsupported or inconsistent source heights. Absolute address-book paths must use canonical spelling without trailing separators or redundant components. After preflight, it deletes the configured consensus WAL and its numbered rotation files.
 
 ### Bug Fixes
 
-* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) Reconstruct in-place testnet commits with vote extensions, update the cached genesis chain ID, and clear pending source-chain evidence while preserving committed evidence history. Honor the configured address-book path and create missing parent directories. Preflight rejects empty address-book paths, directory targets, and inspection errors other than missing paths.
+* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) Reconstruct in-place testnet commits with vote extensions, update the cached genesis chain ID, and clear pending source-chain evidence while preserving committed evidence history. Honor the configured address-book path and create missing parent directories. Preflight rejects empty or noncanonical address-book paths, directory targets, and inspection errors other than missing paths.
 
 ## [v0.50.14](https://github.com/cosmos/cosmos-sdk/releases/tag/v0.50.14) - 2025-07-08
 

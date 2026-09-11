@@ -173,6 +173,7 @@ func TestTestnetifyRejectedPreflightPreservesPendingEvidence(t *testing.T) {
 		appHeight      int64
 		changeAddrbook bool
 		addrbook       string
+		absolute       bool
 		creatorCalled  bool
 	}{
 		{name: "unsupported application height", appHeight: 4, creatorCalled: true},
@@ -181,6 +182,7 @@ func TestTestnetifyRejectedPreflightPreservesPendingEvidence(t *testing.T) {
 		{name: "dot slash address book", appHeight: 3, changeAddrbook: true, addrbook: "./"},
 		{name: "parent directory address book", appHeight: 3, changeAddrbook: true, addrbook: "config/.."},
 		{name: "file as address book parent", appHeight: 3, changeAddrbook: true, addrbook: "config/genesis.json/addrbook.json"},
+		{name: "absolute trailing separator", appHeight: 3, changeAddrbook: true, addrbook: "custom/nested/addrbook.json/", absolute: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Aligned Comet stores pass the initial height checks. The app-height
@@ -193,9 +195,21 @@ func TestTestnetifyRejectedPreflightPreservesPendingEvidence(t *testing.T) {
 			if tc.changeAddrbook {
 				f.ctx.Config.P2P.AddrBook = tc.addrbook
 			}
+			if tc.absolute {
+				// Preserve the trailing separator; filepath.Join would clean it.
+				f.ctx.Config.P2P.AddrBook = f.ctx.Config.RootDir + string(os.PathSeparator) + tc.addrbook
+				_, err := os.Stat(filepath.Clean(f.ctx.Config.P2P.AddrBookFile()))
+				require.ErrorIs(t, err, os.ErrNotExist)
+			}
+			configuredAddrbook := f.ctx.Config.P2P.AddrBook
 			_, err := testnetify(f.ctx, f.creator, f.appDB, nil)
 			require.Error(t, err)
 			require.Equal(t, tc.creatorCalled, f.creatorCalled)
+			require.Equal(t, configuredAddrbook, f.ctx.Config.P2P.AddrBook, "preflight must not normalize the configured path")
+			if tc.absolute {
+				_, err := os.Stat(filepath.Clean(f.ctx.Config.P2P.AddrBookFile()))
+				require.ErrorIs(t, err, os.ErrNotExist)
+			}
 			f.ctx.Config.P2P.AddrBook = addrbook
 			require.Equal(t, filesBefore, snapshotTestnetFiles(t, f))
 			require.Equal(t, storesBefore, snapshotTestnetStores(t, f.ctx.Config, "evidence"))
@@ -208,11 +222,12 @@ func TestTestnetifyRejectedPreflightDoesNotCreatePaths(t *testing.T) {
 		name          string
 		appHeight     int64
 		addrbook      string
+		absolute      bool
 		missingParent bool
 		creatorCalled bool
 	}{
 		{name: "unsupported application height", appHeight: 4, addrbook: "custom/nested/addrbook.json", missingParent: true, creatorCalled: true},
-		{name: "file as address book parent", appHeight: 3, addrbook: "config/genesis.json/addrbook.json"},
+		{name: "absolute trailing separator", appHeight: 3, addrbook: "custom/nested/addrbook.json/", absolute: true, missingParent: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newTestnetStateFixture(t, 3, 3, tc.appHeight, true)
@@ -220,6 +235,9 @@ func TestTestnetifyRejectedPreflightDoesNotCreatePaths(t *testing.T) {
 			// Snapshot the source address book before configuring an invalid path.
 			filesBefore := snapshotTestnetFiles(t, f)
 			f.ctx.Config.P2P.AddrBook = tc.addrbook
+			if tc.absolute {
+				f.ctx.Config.P2P.AddrBook = f.ctx.Config.RootDir + string(os.PathSeparator) + tc.addrbook
+			}
 			absentPaths := []string{filepath.Join(f.ctx.Config.DBDir(), "evidence.db")}
 			if tc.missingParent {
 				absentPaths = append(absentPaths, filepath.Dir(f.ctx.Config.P2P.AddrBookFile()))
