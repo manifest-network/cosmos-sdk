@@ -489,7 +489,9 @@ type testnetSyncFailureDB struct {
 	fail                    bool
 	failSyncWrite           int
 	iteratorError           error
+	iteratorIterationError  error
 	iteratorCloseError      error
+	iteratorKeysRead        int
 	syncWrites, asyncWrites int
 }
 
@@ -514,22 +516,44 @@ func (db *testnetSyncFailureDB) Iterator(start, end []byte) (cmtdb.Iterator, err
 		return nil, db.iteratorError
 	}
 	iterator, err := db.DB.Iterator(start, end)
-	if err != nil || db.iteratorCloseError == nil {
+	if err != nil || (db.iteratorCloseError == nil && db.iteratorIterationError == nil) {
 		return iterator, err
 	}
-	return &testnetCloseFailureIterator{Iterator: iterator, err: db.iteratorCloseError}, nil
+	return &testnetFailureIterator{Iterator: iterator, db: db}, nil
 }
 
-type testnetCloseFailureIterator struct {
+type testnetFailureIterator struct {
 	cmtdb.Iterator
-	err error
+	db     *testnetSyncFailureDB
+	failed bool
 }
 
-func (iterator *testnetCloseFailureIterator) Close() error {
+func (iterator *testnetFailureIterator) Key() []byte {
+	iterator.db.iteratorKeysRead++
+	return iterator.Iterator.Key()
+}
+
+func (iterator *testnetFailureIterator) Next() {
+	iterator.Iterator.Next()
+	iterator.failed = iterator.db.iteratorIterationError != nil
+}
+
+func (iterator *testnetFailureIterator) Valid() bool {
+	return !iterator.failed && iterator.Iterator.Valid()
+}
+
+func (iterator *testnetFailureIterator) Error() error {
+	if iterator.failed {
+		return iterator.db.iteratorIterationError
+	}
+	return iterator.Iterator.Error()
+}
+
+func (iterator *testnetFailureIterator) Close() error {
 	if err := iterator.Iterator.Close(); err != nil {
 		return err
 	}
-	return iterator.err
+	return iterator.db.iteratorCloseError
 }
 
 type testnetSyncFailureBatch struct {

@@ -40,6 +40,11 @@ func TestTestnetifyClearsPendingEvidencePreservingCommitted(t *testing.T) {
 
 func seedTestnetEvidence(t *testing.T, f *testnetStateFixture) (*cmttypes.DuplicateVoteEvidence, map[string][]byte) {
 	t.Helper()
+	return seedTestnetEvidenceCount(t, f, 1)
+}
+
+func seedTestnetEvidenceCount(t *testing.T, f *testnetStateFixture, pendingCount int) (*cmttypes.DuplicateVoteEvidence, map[string][]byte) {
+	t.Helper()
 	stateDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "state", Config: f.ctx.Config})
 	require.NoError(t, err)
 	blockDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "blockstore", Config: f.ctx.Config})
@@ -62,13 +67,16 @@ func seedTestnetEvidence(t *testing.T, f *testnetStateFixture) (*cmttypes.Duplic
 	require.Len(t, committedRecords, 1)
 	// Seed through Comet's pool rather than copying its private key format.
 	// This exercises the real v0.38.12 pending/committed prefix distinction.
-	pending, err := cmttypes.NewMockDuplicateVoteEvidenceWithValidator(height, f.blockTimes[height], f.sourceSigner, state.ChainID)
-	require.NoError(t, err)
-	require.NoError(t, pool.AddEvidence(pending))
+	pendingEvidence := make(cmttypes.EvidenceList, 0, pendingCount)
+	for i := 0; i < pendingCount; i++ {
+		pending, err := cmttypes.NewMockDuplicateVoteEvidenceWithValidator(height, f.blockTimes[height], f.sourceSigner, state.ChainID)
+		require.NoError(t, err)
+		require.NoError(t, pool.AddEvidence(pending))
+		pendingEvidence = append(pendingEvidence, pending)
+	}
 	proposalEvidence, _ := pool.PendingEvidence(-1)
-	require.Len(t, proposalEvidence, 1)
-	require.Equal(t, pending.Hash(), proposalEvidence[0].Hash())
-	require.Len(t, testnetDBContents(t, evidenceDB), 2)
+	require.ElementsMatch(t, pendingEvidence, proposalEvidence)
+	require.Len(t, testnetDBContents(t, evidenceDB), 1+pendingCount)
 	require.NoError(t, pool.Close())
 	require.NoError(t, stateDB.Close())
 	require.NoError(t, blockDB.Close())
@@ -77,15 +85,17 @@ func seedTestnetEvidence(t *testing.T, f *testnetStateFixture) (*cmttypes.Duplic
 
 func TestTestnetifyReplacesAddrbookAtConfiguredPath(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		path     string
-		absolute bool
-		absent   bool
+		name          string
+		path          string
+		absolute      bool
+		absent        bool
+		missingParent bool
 	}{
 		{name: "default read only"},
 		{name: "relative read only", path: filepath.Join("custom", "addrbook.json")},
 		{name: "absolute read only", absolute: true},
 		{name: "absent", path: filepath.Join("custom", "missing.json"), absent: true},
+		{name: "missing parent", path: filepath.Join("custom", "nested", "addrbook.json"), absent: true, missingParent: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newTestnetStateFixture(t, 3, 3, 3, true)
@@ -98,7 +108,12 @@ func TestTestnetifyReplacesAddrbookAtConfiguredPath(t *testing.T) {
 				f.ctx.Config.P2P.AddrBook = tc.path
 			}
 			path := f.ctx.Config.P2P.AddrBookFile()
-			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			if tc.missingParent {
+				_, err := os.Stat(filepath.Dir(path))
+				require.ErrorIs(t, err, os.ErrNotExist)
+			} else {
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+			}
 			var oldFile *os.File
 			if tc.absent {
 				_, err := os.Stat(path)
@@ -147,6 +162,60 @@ func TestTestnetifyInvalidSigningStatePreservesPendingEvidence(t *testing.T) {
 	require.Equal(t, storesBefore, snapshotTestnetStores(t, f.ctx.Config, "evidence"))
 }
 
+func TestTestnetifyRejectedPreflightPreservesPendingEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		appHeight     int64
+		emptyAddrbook bool
+		creatorCalled bool
+	}{
+		{name: "unsupported application height", appHeight: 4, creatorCalled: true},
+		{name: "empty address book", appHeight: 3, emptyAddrbook: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Aligned Comet stores pass the initial height checks. The app-height
+			// case fails only after creating the application and reading Info.
+			f := newTestnetStateFixture(t, 3, 3, tc.appHeight, true)
+			seedTestnetEvidence(t, f)
+			filesBefore := snapshotTestnetFiles(t, f)
+			storesBefore := snapshotTestnetStores(t, f.ctx.Config, "evidence")
+			addrbook := f.ctx.Config.P2P.AddrBook
+			if tc.emptyAddrbook {
+				f.ctx.Config.P2P.AddrBook = ""
+			}
+			_, err := testnetify(f.ctx, f.creator, f.appDB, nil)
+			require.Error(t, err)
+			require.Equal(t, tc.creatorCalled, f.creatorCalled)
+			f.ctx.Config.P2P.AddrBook = addrbook
+			require.Equal(t, filesBefore, snapshotTestnetFiles(t, f))
+			require.Equal(t, storesBefore, snapshotTestnetStores(t, f.ctx.Config, "evidence"))
+		})
+	}
+}
+
+func TestTestnetifyRejectedPreflightDoesNotCreatePaths(t *testing.T) {
+	f := newTestnetStateFixture(t, 3, 3, 4, true)
+	f.ctx.Config.P2P.AddrBook = filepath.Join("custom", "nested", "addrbook.json")
+	evidencePath := filepath.Join(f.ctx.Config.DBDir(), "evidence.db")
+	addrbookParent := filepath.Dir(f.ctx.Config.P2P.AddrBookFile())
+	for _, path := range []string{evidencePath, addrbookParent} {
+		_, err := os.Stat(path)
+		require.ErrorIs(t, err, os.ErrNotExist)
+	}
+	// Opening a store to snapshot it would create the very path under test.
+	filesBefore := snapshotTestnetFiles(t, f)
+	storesBefore := snapshotTestnetStores(t, f.ctx.Config)
+	_, err := testnetify(f.ctx, f.creator, f.appDB, nil)
+	require.Error(t, err)
+	require.True(t, f.creatorCalled)
+	for _, path := range []string{evidencePath, addrbookParent} {
+		_, err := os.Stat(path)
+		require.ErrorIs(t, err, os.ErrNotExist)
+	}
+	require.Equal(t, filesBefore, snapshotTestnetFiles(t, f))
+	require.Equal(t, storesBefore, snapshotTestnetStores(t, f.ctx.Config))
+}
+
 func TestDeleteTestnetPendingEvidenceFlushesAndRetries(t *testing.T) {
 	f := newTestnetStateFixture(t, 3, 3, 3, true)
 	_, committedRecords := seedTestnetEvidence(t, f)
@@ -162,23 +231,25 @@ func TestDeleteTestnetPendingEvidenceFlushesAndRetries(t *testing.T) {
 }
 
 func TestDeleteTestnetPendingEvidenceAbortsOnIteratorErrors(t *testing.T) {
-	for _, closeFailure := range []bool{false, true} {
-		name := "iterator creation"
-		if closeFailure {
-			name = "iterator close"
-		}
+	for _, name := range []string{"iterator creation", "mid iteration", "iterator close"} {
 		t.Run(name, func(t *testing.T) {
 			f := newTestnetStateFixture(t, 3, 3, 3, true)
-			seedTestnetEvidence(t, f)
+			seedTestnetEvidenceCount(t, f, 2)
 			db := openTestnetDB(t, f.ctx.Config, "evidence")
 			before := testnetDBContents(t, db)
 			tracking := &testnetSyncFailureDB{DB: db}
-			if closeFailure {
-				tracking.iteratorCloseError = errTestnetSyncFailure
-			} else {
+			switch name {
+			case "iterator creation":
 				tracking.iteratorError = errTestnetSyncFailure
+			case "mid iteration":
+				tracking.iteratorIterationError = errTestnetSyncFailure
+			case "iterator close":
+				tracking.iteratorCloseError = errTestnetSyncFailure
 			}
 			require.ErrorIs(t, deleteTestnetPendingEvidence(tracking), errTestnetSyncFailure)
+			if name == "mid iteration" {
+				require.Equal(t, 1, tracking.iteratorKeysRead, "one of two pending records was read before iteration failed")
+			}
 			require.Zero(t, tracking.syncWrites)
 			require.Zero(t, tracking.asyncWrites)
 			require.Equal(t, before, testnetDBContents(t, db))

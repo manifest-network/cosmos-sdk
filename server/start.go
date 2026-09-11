@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime/pprof"
 	"strings"
 	"time"
@@ -734,6 +735,9 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if !ok {
 		return nil, fmt.Errorf("expected string for key %s", KeyNewChainID)
 	}
+	if config.P2P.AddrBook == "" {
+		return nil, fmt.Errorf("in-place-testnet requires a non-empty p2p.addr_book_file")
+	}
 
 	// Validate the copied signing identity before any conversion writes. CometBFT's
 	// file loaders exit the process on missing files, so use an error-returning loader.
@@ -815,10 +819,14 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 		return nil, err
 	}
 	height := state.LastBlockHeight
+	addrBookPath := config.P2P.AddrBookFile()
 
-	// Preflight is complete. Opening the evidence database can create files.
-	// These writes span files and independent databases; the conversion as a
-	// whole is not atomic and requires a disposable home.
+	// Preflight is complete. Directory and database creation start the mutation
+	// phase. These writes span files and independent databases; the conversion
+	// as a whole is not atomic and requires a disposable home.
+	if err := os.MkdirAll(filepath.Dir(addrBookPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create address book directory: %w", err)
+	}
 	evidenceDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "evidence", Config: config})
 	if err != nil {
 		return nil, fmt.Errorf("open source evidence database: %w", err)
@@ -834,12 +842,11 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if err := appGen.SaveAs(genFilePath); err != nil {
 		return nil, err
 	}
-	addrBookPath := config.P2P.AddrBookFile()
 	if err := os.Remove(addrBookPath); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("remove source addrbook.json: %w", err)
+		return nil, fmt.Errorf("remove source address book: %w", err)
 	}
 	if err := os.WriteFile(addrBookPath, []byte("{}"), 0o600); err != nil {
-		return nil, fmt.Errorf("replace addrbook.json: %w", err)
+		return nil, fmt.Errorf("replace address book: %w", err)
 	}
 	// Clear any partial next block at the original store height, including when
 	// the latest stored block itself must also be rolled back.
