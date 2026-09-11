@@ -44,7 +44,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ### Bug Fixes
 
-* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) Reconstruct in-place testnet commits with vote extensions, update the cached genesis chain ID, and clear pending source-chain evidence while preserving committed evidence history. Honor the configured address-book path and create missing parent directories.
+* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) Reconstruct in-place testnet commits with vote extensions, update the cached genesis chain ID, and clear pending source-chain evidence while preserving committed evidence history. Honor the configured address-book path and create missing parent directories. Preflight rejects empty address-book paths, directory targets, and inspection errors other than missing paths.
 
 ## [v0.50.14](https://github.com/cosmos/cosmos-sdk/releases/tag/v0.50.14) - 2025-07-08
 

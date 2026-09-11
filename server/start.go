@@ -738,6 +738,14 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if config.P2P.AddrBook == "" {
 		return nil, fmt.Errorf("in-place-testnet requires a non-empty p2p.addr_book_file")
 	}
+	addrBookPath := config.P2P.AddrBookFile()
+	addrBookInfo, err := os.Stat(addrBookPath)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("inspect configured address book: %w", err)
+	}
+	if err == nil && addrBookInfo.IsDir() {
+		return nil, fmt.Errorf("configured p2p.addr_book_file %q is a directory", addrBookPath)
+	}
 
 	// Validate the copied signing identity before any conversion writes. CometBFT's
 	// file loaders exit the process on missing files, so use an error-returning loader.
@@ -819,7 +827,6 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 		return nil, err
 	}
 	height := state.LastBlockHeight
-	addrBookPath := config.P2P.AddrBookFile()
 
 	// Preflight is complete. Directory and database creation start the mutation
 	// phase. These writes span files and independent databases; the conversion

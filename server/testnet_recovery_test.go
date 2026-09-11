@@ -133,6 +133,11 @@ func TestTestnetifyReplacesAddrbookAtConfiguredPath(t *testing.T) {
 			info, err := os.Stat(path)
 			require.NoError(t, err)
 			require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+			if tc.missingParent {
+				parentInfo, err := os.Stat(filepath.Dir(path))
+				require.NoError(t, err)
+				require.Zero(t, parentInfo.Mode().Perm()&0o077, "new address-book parent must remain private")
+			}
 			if oldFile != nil {
 				// An open descriptor proves replacement even when elevated tests
 				// could overwrite a read-only file in place.
@@ -164,13 +169,18 @@ func TestTestnetifyInvalidSigningStatePreservesPendingEvidence(t *testing.T) {
 
 func TestTestnetifyRejectedPreflightPreservesPendingEvidence(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		appHeight     int64
-		emptyAddrbook bool
-		creatorCalled bool
+		name           string
+		appHeight      int64
+		changeAddrbook bool
+		addrbook       string
+		creatorCalled  bool
 	}{
 		{name: "unsupported application height", appHeight: 4, creatorCalled: true},
-		{name: "empty address book", appHeight: 3, emptyAddrbook: true},
+		{name: "empty address book", appHeight: 3, changeAddrbook: true},
+		{name: "dot address book", appHeight: 3, changeAddrbook: true, addrbook: "."},
+		{name: "dot slash address book", appHeight: 3, changeAddrbook: true, addrbook: "./"},
+		{name: "parent directory address book", appHeight: 3, changeAddrbook: true, addrbook: "config/.."},
+		{name: "file as address book parent", appHeight: 3, changeAddrbook: true, addrbook: "config/genesis.json/addrbook.json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Aligned Comet stores pass the initial height checks. The app-height
@@ -180,8 +190,8 @@ func TestTestnetifyRejectedPreflightPreservesPendingEvidence(t *testing.T) {
 			filesBefore := snapshotTestnetFiles(t, f)
 			storesBefore := snapshotTestnetStores(t, f.ctx.Config, "evidence")
 			addrbook := f.ctx.Config.P2P.AddrBook
-			if tc.emptyAddrbook {
-				f.ctx.Config.P2P.AddrBook = ""
+			if tc.changeAddrbook {
+				f.ctx.Config.P2P.AddrBook = tc.addrbook
 			}
 			_, err := testnetify(f.ctx, f.creator, f.appDB, nil)
 			require.Error(t, err)
@@ -194,26 +204,44 @@ func TestTestnetifyRejectedPreflightPreservesPendingEvidence(t *testing.T) {
 }
 
 func TestTestnetifyRejectedPreflightDoesNotCreatePaths(t *testing.T) {
-	f := newTestnetStateFixture(t, 3, 3, 4, true)
-	f.ctx.Config.P2P.AddrBook = filepath.Join("custom", "nested", "addrbook.json")
-	evidencePath := filepath.Join(f.ctx.Config.DBDir(), "evidence.db")
-	addrbookParent := filepath.Dir(f.ctx.Config.P2P.AddrBookFile())
-	for _, path := range []string{evidencePath, addrbookParent} {
-		_, err := os.Stat(path)
-		require.ErrorIs(t, err, os.ErrNotExist)
+	for _, tc := range []struct {
+		name          string
+		appHeight     int64
+		addrbook      string
+		missingParent bool
+		creatorCalled bool
+	}{
+		{name: "unsupported application height", appHeight: 4, addrbook: "custom/nested/addrbook.json", missingParent: true, creatorCalled: true},
+		{name: "file as address book parent", appHeight: 3, addrbook: "config/genesis.json/addrbook.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTestnetStateFixture(t, 3, 3, tc.appHeight, true)
+			addrbook := f.ctx.Config.P2P.AddrBook
+			// Snapshot the source address book before configuring an invalid path.
+			filesBefore := snapshotTestnetFiles(t, f)
+			f.ctx.Config.P2P.AddrBook = tc.addrbook
+			absentPaths := []string{filepath.Join(f.ctx.Config.DBDir(), "evidence.db")}
+			if tc.missingParent {
+				absentPaths = append(absentPaths, filepath.Dir(f.ctx.Config.P2P.AddrBookFile()))
+			}
+			for _, path := range absentPaths {
+				_, err := os.Stat(path)
+				require.ErrorIs(t, err, os.ErrNotExist)
+			}
+			// Opening a store to snapshot it would create the very path under test.
+			storesBefore := snapshotTestnetStores(t, f.ctx.Config)
+			_, err := testnetify(f.ctx, f.creator, f.appDB, nil)
+			require.Error(t, err)
+			require.Equal(t, tc.creatorCalled, f.creatorCalled)
+			for _, path := range absentPaths {
+				_, err := os.Stat(path)
+				require.ErrorIs(t, err, os.ErrNotExist)
+			}
+			f.ctx.Config.P2P.AddrBook = addrbook
+			require.Equal(t, filesBefore, snapshotTestnetFiles(t, f))
+			require.Equal(t, storesBefore, snapshotTestnetStores(t, f.ctx.Config))
+		})
 	}
-	// Opening a store to snapshot it would create the very path under test.
-	filesBefore := snapshotTestnetFiles(t, f)
-	storesBefore := snapshotTestnetStores(t, f.ctx.Config)
-	_, err := testnetify(f.ctx, f.creator, f.appDB, nil)
-	require.Error(t, err)
-	require.True(t, f.creatorCalled)
-	for _, path := range []string{evidencePath, addrbookParent} {
-		_, err := os.Stat(path)
-		require.ErrorIs(t, err, os.ErrNotExist)
-	}
-	require.Equal(t, filesBefore, snapshotTestnetFiles(t, f))
-	require.Equal(t, storesBefore, snapshotTestnetStores(t, f.ctx.Config))
 }
 
 func TestDeleteTestnetPendingEvidenceFlushesAndRetries(t *testing.T) {
@@ -249,6 +277,11 @@ func TestDeleteTestnetPendingEvidenceAbortsOnIteratorErrors(t *testing.T) {
 			require.ErrorIs(t, deleteTestnetPendingEvidence(tracking), errTestnetSyncFailure)
 			if name == "mid iteration" {
 				require.Equal(t, 1, tracking.iteratorKeysRead, "one of two pending records was read before iteration failed")
+			}
+			if name == "iterator creation" {
+				require.Zero(t, tracking.iteratorCloseCalls)
+			} else {
+				require.Equal(t, 1, tracking.iteratorCloseCalls)
 			}
 			require.Zero(t, tracking.syncWrites)
 			require.Zero(t, tracking.asyncWrites)

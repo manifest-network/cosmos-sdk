@@ -46,6 +46,10 @@ func TestTestnetifyReconstructsConsensusAtReconciledHeight(t *testing.T) {
 				require.NoError(t, err)
 				require.Same(t, f.application, application)
 				require.True(t, f.creatorCalled)
+				for _, path := range []string{f.ctx.Config.Consensus.WalFile(), f.ctx.Config.Consensus.WalFile() + ".000"} {
+					_, err := os.Stat(path)
+					require.ErrorIs(t, err, os.ErrNotExist, "source WAL must be removed after conversion")
+				}
 
 				stateDB := openTestnetDB(t, f.ctx.Config, "state")
 				stateStore := sm.NewStore(stateDB, sm.StoreOptions{})
@@ -328,9 +332,11 @@ func newTestnetStateFixture(t *testing.T, stateHeight, storeHeight, appHeight in
 	ctx.Config.SetRoot(t.TempDir())
 	ctx.Config.DBBackend = string(cmtdb.GoLevelDBBackend)
 	ctx.Viper.Set(KeyNewChainID, "fork-chain")
-	for _, directory := range []string{filepath.Dir(ctx.Config.GenesisFile()), ctx.Config.DBDir()} {
+	for _, directory := range []string{filepath.Dir(ctx.Config.GenesisFile()), ctx.Config.DBDir(), filepath.Dir(ctx.Config.Consensus.WalFile())} {
 		require.NoError(t, os.MkdirAll(directory, 0o700))
 	}
+	require.NoError(t, os.WriteFile(ctx.Config.Consensus.WalFile(), []byte("source consensus WAL"), 0o600))
+	require.NoError(t, os.WriteFile(ctx.Config.Consensus.WalFile()+".000", []byte("source consensus WAL rotation"), 0o600))
 	pv := privval.GenFilePV(ctx.Config.PrivValidatorKeyFile(), ctx.Config.PrivValidatorStateFile())
 	pv.Save()
 	forkKey, err := pv.GetPubKey()
@@ -443,7 +449,10 @@ type testnetFileSnapshot struct {
 func snapshotTestnetFiles(t *testing.T, f *testnetStateFixture) map[string]testnetFileSnapshot {
 	t.Helper()
 	files := make(map[string]testnetFileSnapshot)
-	for _, path := range []string{f.ctx.Config.GenesisFile(), f.ctx.Config.PrivValidatorKeyFile(), f.ctx.Config.PrivValidatorStateFile(), f.ctx.Config.P2P.AddrBookFile()} {
+	for _, path := range []string{
+		f.ctx.Config.GenesisFile(), f.ctx.Config.PrivValidatorKeyFile(), f.ctx.Config.PrivValidatorStateFile(),
+		f.ctx.Config.P2P.AddrBookFile(), f.ctx.Config.Consensus.WalFile(), f.ctx.Config.Consensus.WalFile() + ".000",
+	} {
 		info, err := os.Stat(path)
 		if os.IsNotExist(err) {
 			continue
@@ -492,6 +501,7 @@ type testnetSyncFailureDB struct {
 	iteratorIterationError  error
 	iteratorCloseError      error
 	iteratorKeysRead        int
+	iteratorCloseCalls      int
 	syncWrites, asyncWrites int
 }
 
@@ -550,6 +560,7 @@ func (iterator *testnetFailureIterator) Error() error {
 }
 
 func (iterator *testnetFailureIterator) Close() error {
+	iterator.db.iteratorCloseCalls++
 	if err := iterator.Iterator.Close(); err != nil {
 		return err
 	}
