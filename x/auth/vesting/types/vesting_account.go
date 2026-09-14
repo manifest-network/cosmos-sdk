@@ -10,6 +10,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	vestexported "github.com/cosmos/cosmos-sdk/x/auth/vesting/exported"
+	vestingcoins "github.com/cosmos/cosmos-sdk/x/auth/vesting/internal/coins"
 )
 
 // Compile-time type assertions
@@ -295,13 +296,13 @@ func NewPeriodicVestingAccount(baseAcc *authtypes.BaseAccount, originalVesting s
 // GetVestedCoins returns the total number of vested coins. If no coins are vested,
 // nil is returned.
 func (pva PeriodicVestingAccount) GetVestedCoins(blockTime time.Time) sdk.Coins {
-	var vestedCoins sdk.Coins
+	var vestedCoins vestingcoins.Accumulator
 
 	// We must handle the case where the start time for a vesting account has
 	// been set into the future or when the start of the chain is not exactly
 	// known.
 	if blockTime.Unix() <= pva.StartTime {
-		return vestedCoins
+		return nil
 	} else if blockTime.Unix() >= pva.EndTime {
 		return pva.OriginalVesting
 	}
@@ -316,13 +317,13 @@ func (pva PeriodicVestingAccount) GetVestedCoins(blockTime time.Time) sdk.Coins 
 			break
 		}
 
-		vestedCoins = vestedCoins.Add(period.Amount...)
+		vestedCoins.Add(period.Amount)
 
 		// update the start time of the next period
 		currentPeriodStartTime += period.Length
 	}
 
-	return vestedCoins
+	return vestedCoins.Coins()
 }
 
 // GetVestingCoins returns the total number of vesting coins. If no coins are
@@ -361,7 +362,8 @@ func (pva PeriodicVestingAccount) Validate() error {
 		return errors.New("vesting start-time cannot be before end-time")
 	}
 	endTime := pva.StartTime
-	originalVesting := sdk.NewCoins()
+	var accumulated vestingcoins.Accumulator
+	accumulated.Add(nil)
 	for i, p := range pva.VestingPeriods {
 		if p.Length < 0 {
 			return fmt.Errorf("period #%d has a negative length: %d", i, p.Length)
@@ -372,7 +374,7 @@ func (pva PeriodicVestingAccount) Validate() error {
 			return fmt.Errorf("period #%d has invalid coins: %s", i, p.Amount.String())
 		}
 
-		originalVesting = originalVesting.Add(p.Amount...)
+		accumulated.Add(p.Amount)
 	}
 	if endTime != pva.EndTime {
 		return errors.New("vesting end time does not match length of all vesting periods")
@@ -380,6 +382,7 @@ func (pva PeriodicVestingAccount) Validate() error {
 	if endTime < pva.GetStartTime() {
 		return errors.New("cumulative endTime overflowed, and/or is less than startTime")
 	}
+	originalVesting := accumulated.Coins()
 	if !originalVesting.Equal(pva.OriginalVesting) {
 		return fmt.Errorf("original vesting coins (%v) does not match the sum of all coins in vesting periods (%v)", pva.OriginalVesting, originalVesting)
 	}
