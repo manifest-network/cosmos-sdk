@@ -280,8 +280,13 @@ func EncodeArmor(blockType string, headers map[string]string, data []byte) strin
 
 func DecodeArmor(armorStr string) (blockType string, headers map[string]string, data []byte, err error) {
 	source := strings.NewReader(armorStr)
-	// armor.Decode reuses this buffered reader. Record its position after the
-	// selected block's headers so skipped blocks cannot supply its checksum.
+	// Match armor.Decode's bufio.NewReaderSize(in, 100) to preserve its line
+	// limits. bufio reuses a *Reader only if its buffer is at least that size,
+	// so Decode consumes through this reader and Buffered() locates the body
+	// after the selected block's headers, including when earlier blocks are skipped.
+	// If go-crypto increases its buffer size, it will wrap this reader instead,
+	// invalidating bodyOffset and potentially skipping checksum verification.
+	// Keep the sizes in sync; the mismatched-checksum tests guard this assumption.
 	buf := bufio.NewReaderSize(source, 100)
 	block, err := armor.Decode(buf)
 	if err != nil {

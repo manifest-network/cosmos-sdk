@@ -141,7 +141,9 @@ func TestDecodeArmorChecksSelectedBlockCRC(t *testing.T) {
 			blockType: "TENDERMINT PUBLIC KEY", headers: map[string]string{"version": "0.0.1"}, data: []byte("representative public key bytes"),
 		},
 		{
-			name: "long garbage line", armor: strings.Repeat("x", 200) + first + "\n" + second,
+			// No newline after the garbage: the first BEGIN shares the overlong
+			// line and is skipped, so its checksum must not affect the second block.
+			name: "garbage prefix swallows first begin line", armor: strings.Repeat("x", 200) + first + "\n" + second,
 			blockType: "TENDERMINT PUBLIC KEY", headers: map[string]string{"version": "0.0.1"}, data: []byte("representative public key bytes"),
 		},
 		{
