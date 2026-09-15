@@ -6,6 +6,7 @@ import (
 	"time"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	vestingcoins "github.com/cosmos/cosmos-sdk/x/auth/vesting/internal/coins"
 )
 
 // Periods stores all vesting periods passed as part of a PeriodicVestingAccount
@@ -31,13 +32,15 @@ func (p Periods) TotalDuration() time.Duration {
 	return time.Duration(len) * time.Second
 }
 
-// TotalDuration returns the sum of coins for the period
+// TotalAmount returns the sum of coins for the periods.
 func (p Periods) TotalAmount() sdk.Coins {
-	total := sdk.Coins{}
+	var total vestingcoins.Accumulator
+	// Preserve the non-nil empty result for an empty schedule.
+	total.Add(nil)
 	for _, period := range p {
-		total = total.Add(period.Amount...)
+		total.Add(period.Amount)
 	}
-	return total
+	return total.Coins()
 }
 
 // String implements the fmt.Stringer interface

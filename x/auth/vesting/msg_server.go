@@ -12,6 +12,7 @@ import (
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 	"github.com/cosmos/cosmos-sdk/x/auth/keeper"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+	vestingcoins "github.com/cosmos/cosmos-sdk/x/auth/vesting/internal/coins"
 	"github.com/cosmos/cosmos-sdk/x/auth/vesting/types"
 )
 
@@ -170,7 +171,7 @@ func (s msgServer) CreatePeriodicVestingAccount(goCtx context.Context, msg *type
 		return nil, errorsmod.Wrapf(sdkerrors.ErrInvalidRequest, "invalid start time of %d, length must be greater than 0", msg.StartTime)
 	}
 
-	var totalCoins sdk.Coins
+	var accumulated vestingcoins.Accumulator
 	for i, period := range msg.VestingPeriods {
 		if period.Length < 1 {
 			return nil, errorsmod.Wrapf(sdkerrors.ErrInvalidRequest, "invalid period length of %d in period %d, length must be greater than 0", period.Length, i)
@@ -180,8 +181,9 @@ func (s msgServer) CreatePeriodicVestingAccount(goCtx context.Context, msg *type
 			return nil, err
 		}
 
-		totalCoins = totalCoins.Add(period.Amount...)
+		accumulated.Add(period.Amount)
 	}
+	totalCoins := accumulated.Coins()
 
 	if s.BankKeeper.BlockedAddr(to) {
 		return nil, errorsmod.Wrapf(sdkerrors.ErrUnauthorized, "%s is not allowed to receive funds", msg.ToAddress)

@@ -48,6 +48,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ### Bug Fixes
 
+* (x/auth/vesting) [#5](https://github.com/manifest-network/cosmos-sdk/pull/5) Accumulate periodic vesting schedules without repeatedly copying and sorting the growing total in `GetVestedCoins`, `Periods.TotalAmount`, account validation, and account creation. Preserve vesting amounts, boundary behavior, and checked arithmetic while sorting the final denomination totals once.
 * (crypto) [#3](https://github.com/manifest-network/cosmos-sdk/pull/3) Replace the unmaintained OpenPGP armor dependency with `github.com/ProtonMail/go-crypto` v1.4.1 to remove calls affected by GO-2026-5932. Preserve key-export compatibility and checksum checks for accidental corruption, continue accepting missing checksums, and make multi-header encoding deterministic.
 * (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) Reconstruct in-place testnet commits with vote extensions, update the cached genesis chain ID, and clear pending source-chain evidence while preserving committed evidence history. Honor the configured address-book path and create missing parent directories. Preflight rejects empty address-book paths, inspection errors other than missing paths, and directory targets.
 
