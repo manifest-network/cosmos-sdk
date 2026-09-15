@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	cmtdb "github.com/cometbft/cometbft-db"
 	"github.com/cometbft/cometbft/abci/server"
 	cmtcmd "github.com/cometbft/cometbft/cmd/cometbft/commands"
 	cmtcfg "github.com/cometbft/cometbft/config"
@@ -19,7 +20,6 @@ import (
 	"github.com/cometbft/cometbft/node"
 	"github.com/cometbft/cometbft/p2p"
 	pvm "github.com/cometbft/cometbft/privval"
-	cmtstate "github.com/cometbft/cometbft/proto/tendermint/state"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	"github.com/cometbft/cometbft/proxy"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
@@ -735,8 +735,33 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if !ok {
 		return nil, fmt.Errorf("expected string for key %s", KeyNewChainID)
 	}
+	if config.P2P.AddrBook == "" {
+		return nil, fmt.Errorf("in-place-testnet requires a non-empty p2p.addr_book_file")
+	}
+	addrBookPath := config.P2P.AddrBookFile()
+	if cleanPath := filepath.Clean(addrBookPath); addrBookPath != cleanPath {
+		return nil, fmt.Errorf("configured p2p.addr_book_file %q must be a clean file path; use %q", addrBookPath, cleanPath)
+	}
+	addrBookInfo, err := os.Stat(addrBookPath)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("inspect configured address book: %w", err)
+	}
+	if err == nil && addrBookInfo.IsDir() {
+		return nil, fmt.Errorf("configured p2p.addr_book_file %q is a directory", addrBookPath)
+	}
 
-	// Modify app genesis chain ID and save to genesis file.
+	// Validate the copied signing identity before any conversion writes. CometBFT's
+	// file loaders exit the process on missing files, so use an error-returning loader.
+	privValidator, err := loadTestnetPrivValidator(config.PrivValidatorKeyFile(), config.PrivValidatorStateFile())
+	if err != nil {
+		return nil, err
+	}
+	userPubKey, err := privValidator.GetPubKey()
+	if err != nil {
+		return nil, err
+	}
+	validatorAddress := userPubKey.Address()
+
 	genFilePath := config.GenesisFile()
 	appGen, err := genutiltypes.AppGenesisFromFile(genFilePath)
 	if err != nil {
@@ -746,120 +771,109 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if err := appGen.ValidateAndComplete(); err != nil {
 		return nil, err
 	}
-	if err := appGen.SaveAs(genFilePath); err != nil {
-		return nil, err
-	}
 
-	// Regenerate addrbook.json to prevent peers on old network from causing error logs.
-	addrBookPath := filepath.Join(config.RootDir, "config", "addrbook.json")
-	if err := os.Remove(addrBookPath); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to remove existing addrbook.json: %w", err)
-	}
-
-	emptyAddrBook := []byte("{}")
-	if err := os.WriteFile(addrBookPath, emptyAddrBook, 0o600); err != nil {
-		return nil, fmt.Errorf("failed to create empty addrbook.json: %w", err)
-	}
-
-	// Load the comet genesis doc provider.
-	genDocProvider := node.DefaultGenesisDocProviderFunc(config)
-
-	// Initialize blockStore and stateDB.
 	blockStoreDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "blockstore", Config: config})
 	if err != nil {
 		return nil, err
 	}
 	blockStore := store.NewBlockStore(blockStoreDB)
-
+	defer blockStore.Close()
 	stateDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "state", Config: config})
 	if err != nil {
 		return nil, err
 	}
-
-	defer blockStore.Close()
 	defer stateDB.Close()
-
-	privValidator := pvm.LoadOrGenFilePV(config.PrivValidatorKeyFile(), config.PrivValidatorStateFile())
-	userPubKey, err := privValidator.GetPubKey()
-	if err != nil {
-		return nil, err
-	}
-	validatorAddress := userPubKey.Address()
-
 	stateStore := sm.NewStore(stateDB, sm.StoreOptions{
 		DiscardABCIResponses: config.Storage.DiscardABCIResponses,
 	})
-
-	state, genDoc, err := node.LoadStateFromDBOrGenesisDocProvider(stateDB, genDocProvider)
+	state, err := stateStore.Load()
 	if err != nil {
 		return nil, err
 	}
-
-	ctx.Viper.Set(KeyNewValAddr, validatorAddress)
-	ctx.Viper.Set(KeyUserPubKey, userPubKey)
-	testnetApp := testnetAppCreator(ctx.Logger, db, traceWriter, ctx.Viper)
-
-	// We need to create a temporary proxyApp to get the initial state of the application.
-	// Depending on how the node was stopped, the application height can differ from the blockStore height.
-	// This height difference changes how we go about modifying the state.
-	cmtApp := NewCometABCIWrapper(testnetApp)
-	_, context := getCtx(ctx, true)
-	clientCreator := proxy.NewLocalClientCreator(cmtApp)
-	metrics := node.DefaultMetricsProvider(cmtcfg.DefaultConfig().Instrumentation)
-	_, _, _, _, proxyMetrics, _, _ := metrics(genDoc.ChainID)
-	proxyApp := proxy.NewAppConns(clientCreator, proxyMetrics)
-	if err := proxyApp.Start(); err != nil {
-		return nil, fmt.Errorf("error starting proxy app connections: %v", err)
+	if err := validateTestnetStoreHeights(state.LastBlockHeight, blockStore.Height()); err != nil {
+		return nil, err
 	}
-	res, err := proxyApp.Query().Info(context, proxy.RequestInfo)
-	if err != nil {
-		return nil, fmt.Errorf("error calling Info: %v", err)
-	}
-	err = proxyApp.Stop()
+
+	// Read the cached document without the node provider's write-on-miss behavior.
+	cachedGenesis, err := stateDB.Get(testnetGenesisDocKey())
 	if err != nil {
 		return nil, err
 	}
-	appHash := res.LastBlockAppHash
-	appHeight := res.LastBlockHeight
-
-	var block *cmttypes.Block
-	switch {
-	case appHeight == blockStore.Height():
-		block = blockStore.LoadBlock(blockStore.Height())
-		// If the state's last blockstore height does not match the app and blockstore height, we likely stopped with the halt height flag.
-		if state.LastBlockHeight != appHeight {
-			state.LastBlockHeight = appHeight
-			block.AppHash = appHash
-			state.AppHash = appHash
-		} else {
-			// Node was likely stopped via SIGTERM, delete the next block's seen commit
-			err := blockStoreDB.Delete([]byte(fmt.Sprintf("SC:%v", blockStore.Height()+1)))
-			if err != nil {
-				return nil, err
-			}
+	var genDoc *cmttypes.GenesisDoc
+	if len(cachedGenesis) > 0 {
+		// ToGenesisDoc shares AppState storage with appGen. Decode into a fresh
+		// document so Unmarshal cannot overwrite appGen's raw JSON before SaveAs.
+		genDoc = new(cmttypes.GenesisDoc)
+		if err := cmtjson.Unmarshal(cachedGenesis, genDoc); err != nil {
+			return nil, fmt.Errorf("decode cached genesis: %w", err)
 		}
-	case blockStore.Height() > state.LastBlockHeight:
-		// This state usually occurs when we gracefully stop the node.
-		err = blockStore.DeleteLatestBlock()
+	} else {
+		genDoc, err = appGen.ToGenesisDoc()
 		if err != nil {
 			return nil, err
 		}
-		block = blockStore.LoadBlock(blockStore.Height())
-	default:
-		// If there is any other state, we just load the block
-		block = blockStore.LoadBlock(blockStore.Height())
 	}
+	genDoc.ChainID = newChainID
 
-	block.ChainID = newChainID
+	ctx.Viper.Set(KeyNewValAddr, validatorAddress)
+	ctx.Viper.Set(KeyUserPubKey, userPubKey)
+	// The application must use the new chain ID even though the genesis file is
+	// unchanged until the application height has also passed validation.
+	ctx.Viper.Set(flags.FlagChainID, newChainID)
+	testnetApp := testnetAppCreator(ctx.Logger, db, traceWriter, ctx.Viper)
+	res, err := testnetApp.Info(proxy.RequestInfo)
+	if err != nil {
+		return nil, fmt.Errorf("query testnet application height: %w", err)
+	}
+	state, rollback, err := reconcileTestnetState(state, stateDB, stateStore, blockStore, res.LastBlockHeight, res.LastBlockAppHash)
+	if err != nil {
+		return nil, err
+	}
+	height := state.LastBlockHeight
+
+	// Preflight is complete. Directory and database creation start the mutation
+	// phase. These writes span files and independent databases; the conversion
+	// as a whole is not atomic and requires a disposable home.
+	if err := os.MkdirAll(filepath.Dir(addrBookPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create address book directory: %w", err)
+	}
+	evidenceDB, err := cmtcfg.DefaultDBProvider(&cmtcfg.DBContext{ID: "evidence", Config: config})
+	if err != nil {
+		return nil, fmt.Errorf("open source evidence database: %w", err)
+	}
+	defer evidenceDB.Close()
+
+	if err := deleteTestnetPendingEvidence(evidenceDB); err != nil {
+		return nil, err
+	}
+	if err := removeTestnetWAL(config.Consensus.WalFile()); err != nil {
+		return nil, err
+	}
+	if err := appGen.SaveAs(genFilePath); err != nil {
+		return nil, err
+	}
+	if err := os.Remove(addrBookPath); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("remove source address book: %w", err)
+	}
+	if err := os.WriteFile(addrBookPath, []byte("{}"), 0o600); err != nil {
+		return nil, fmt.Errorf("replace address book: %w", err)
+	}
+	// Clear any partial next block at the original store height, including when
+	// the latest stored block itself must also be rolled back.
+	if err := deleteTestnetCommits(blockStoreDB, blockStore.Height()+1); err != nil {
+		return nil, err
+	}
+	if rollback {
+		if err := rollbackTestnetBlock(blockStore, blockStoreDB); err != nil {
+			return nil, err
+		}
+	}
 	state.ChainID = newChainID
-
-	block.LastBlockID = state.LastBlockID
-	block.LastCommit.BlockID = state.LastBlockID
 
 	// Create a vote from our validator
 	vote := cmttypes.Vote{
 		Type:             cmtproto.PrecommitType,
-		Height:           state.LastBlockHeight,
+		Height:           height,
 		Round:            0,
 		BlockID:          state.LastBlockID,
 		Timestamp:        time.Now(),
@@ -876,22 +890,12 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	}
 	vote.Signature = voteProto.Signature
 	vote.Timestamp = voteProto.Timestamp
+	vote.Extension = voteProto.Extension
+	vote.ExtensionSignature = voteProto.ExtensionSignature
 
-	// Modify the block's lastCommit to be signed only by our validator
-	block.LastCommit.Signatures[0].ValidatorAddress = validatorAddress
-	block.LastCommit.Signatures[0].Signature = vote.Signature
-	block.LastCommit.Signatures = []cmttypes.CommitSig{block.LastCommit.Signatures[0]}
-
-	// Load the seenCommit of the lastBlockHeight and modify it to be signed from our validator
-	seenCommit := blockStore.LoadSeenCommit(state.LastBlockHeight)
-	seenCommit.BlockID = state.LastBlockID
-	seenCommit.Round = vote.Round
-	seenCommit.Signatures[0].Signature = vote.Signature
-	seenCommit.Signatures[0].ValidatorAddress = validatorAddress
-	seenCommit.Signatures[0].Timestamp = vote.Timestamp
-	seenCommit.Signatures = []cmttypes.CommitSig{seenCommit.Signatures[0]}
-	err = blockStore.SaveSeenCommit(state.LastBlockHeight, seenCommit)
-	if err != nil {
+	// Construct fresh signatures: the original first signature may be absent or
+	// for a nil block. Consensus reconstructs the extended commit when enabled.
+	if err := saveTestnetCommit(blockStoreDB, &vote, state.ConsensusParams.ABCI.VoteExtensionsEnabled(height)); err != nil {
 		return nil, err
 	}
 
@@ -910,42 +914,11 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	state.Validators = newValSet
 	state.LastValidators = newValSet
 	state.NextValidators = newValSet
-	state.LastHeightValidatorsChanged = blockStore.Height()
+	state.LastHeightValidatorsChanged = height
 
-	err = stateStore.Save(state)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create a ValidatorsInfo struct to store in stateDB.
-	valSet, err := state.Validators.ToProto()
-	if err != nil {
-		return nil, err
-	}
-	valInfo := &cmtstate.ValidatorsInfo{
-		ValidatorSet:      valSet,
-		LastHeightChanged: state.LastBlockHeight,
-	}
-	buf, err := valInfo.Marshal()
-	if err != nil {
-		return nil, err
-	}
-
-	// Modfiy Validators stateDB entry.
-	err = stateDB.Set([]byte(fmt.Sprintf("validatorsKey:%v", blockStore.Height())), buf)
-	if err != nil {
-		return nil, err
-	}
-
-	// Modify LastValidators stateDB entry.
-	err = stateDB.Set([]byte(fmt.Sprintf("validatorsKey:%v", blockStore.Height()-1)), buf)
-	if err != nil {
-		return nil, err
-	}
-
-	// Modify NextValidators stateDB entry.
-	err = stateDB.Set([]byte(fmt.Sprintf("validatorsKey:%v", blockStore.Height()+1)), buf)
-	if err != nil {
+	// Bootstrap writes the state and the validator sets at height, height+1 and
+	// height+2 in one synced batch, using CometBFT's own history-key encoding.
+	if err := stateStore.Bootstrap(state); err != nil {
 		return nil, err
 	}
 
@@ -954,11 +927,52 @@ func testnetify(ctx *Context, testnetAppCreator types.AppCreator, db dbm.DB, tra
 	if err != nil {
 		return nil, err
 	}
-	if err := stateDB.SetSync([]byte("genesisDoc"), b); err != nil {
+	if err := stateDB.SetSync(testnetGenesisDocKey(), b); err != nil {
 		return nil, err
 	}
 
 	return testnetApp, err
+}
+
+// saveTestnetCommit replaces both commit records together. CometBFT does not
+// expose a method for replacing an extended commit at an existing block height.
+func saveTestnetCommit(db cmtdb.DB, vote *cmttypes.Vote, extensionsEnabled bool) error {
+	if !vote.BlockID.IsComplete() {
+		return fmt.Errorf("testnet vote must commit a complete block ID")
+	}
+	extendedCommit := &cmttypes.ExtendedCommit{
+		Height:             vote.Height,
+		Round:              vote.Round,
+		BlockID:            vote.BlockID,
+		ExtendedSignatures: []cmttypes.ExtendedCommitSig{vote.ExtendedCommitSig()},
+	}
+	if extensionsEnabled {
+		if err := extendedCommit.EnsureExtensions(true); err != nil {
+			return fmt.Errorf("invalid testnet vote extension: %w", err)
+		}
+	}
+	seenBytes, err := extendedCommit.ToCommit().ToProto().Marshal()
+	if err != nil {
+		return err
+	}
+	batch := db.NewBatch()
+	defer batch.Close()
+	if err := batch.Set(testnetSeenCommitKey(vote.Height), seenBytes); err != nil {
+		return err
+	}
+	extendedKey := testnetExtendedCommitKey(vote.Height)
+	if extensionsEnabled {
+		extendedBytes, err := extendedCommit.ToProto().Marshal()
+		if err != nil {
+			return err
+		}
+		if err := batch.Set(extendedKey, extendedBytes); err != nil {
+			return err
+		}
+	} else if err := batch.Delete(extendedKey); err != nil {
+		return err
+	}
+	return batch.WriteSync()
 }
 
 // addStartNodeFlags should be added to any CLI commands that start the network.

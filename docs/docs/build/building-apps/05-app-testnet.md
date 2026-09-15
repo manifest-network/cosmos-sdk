@@ -12,6 +12,13 @@ We allow developers to take the state from their mainnet and run tests against t
 
 We will be breaking down the steps to create a testnet from mainnet state. 
 
+The snippets below illustrate an application's conversion callback. Adapt the
+keeper updates to your application's modules and state invariants, then register
+the callback as shown in [Running the Testnet](#running-the-testnet). `simd` does
+not expose `in-place-testnet` by default. For preparing a copied node home and
+running a registered application's command, follow the
+[operator instructions](../../user/run-node/05-run-testnet.md#create-a-testnet-from-existing-state).
+
 ```go 
   // InitSimAppForTestnet is broken down into two sections:
   // Required Changes: Changes that, if not made, will cause the testnet to halt or panic
@@ -25,7 +32,9 @@ We will be breaking down the steps to create a testnet from mainnet state.
 
 #### Staking
 
-When creating a testnet the important part is migrate the validator set from many validators to one or a few. This allows developers to spin up the chain without needing to replace validator keys. 
+The application must replace its source validator state to match the SDK's
+single-validator consensus set, using the fresh local consensus key supplied by
+the operator.
 
 ```go
 	ctx := app.BaseApp.NewUncachedContext(true, tmproto.Header{})
@@ -166,7 +175,10 @@ It is useful to create new accounts for your testing purposes. This avoids the n
 
 #### Upgrade
 
-If you would like to schedule an upgrade the below can be used. 
+The SDK passes `--trigger-testnet-upgrade` to the callback as
+`server.KeyTriggerTestnetUpgrade`; scheduling is the application's responsibility.
+Register the requested handler in the application and schedule it at the height
+appropriate for the rehearsal. This example schedules the first fork block:
 
 ```go
 	// UPGRADE
@@ -175,7 +187,7 @@ If you would like to schedule an upgrade the below can be used.
 	if upgradeToTrigger != "" {
 		upgradePlan := upgradetypes.Plan{
 			Name:   upgradeToTrigger,
-			Height: app.LastBlockHeight(),
+			Height: app.LastBlockHeight() + 1,
 		}
 		err = app.UpgradeKeeper.ScheduleUpgrade(ctx, upgradePlan)
 		if err != nil {
@@ -190,21 +202,23 @@ If you have custom modules that rely on specific state from the above modules an
 
 ## Running the Testnet
 
-Before we can run the testnet we must plug everything together. 
+Register the conversion callback in the application's binary. The SDK does not
+register it automatically for `simd` or other applications.
 
 in `root.go`, in the `initRootCmd` function we add:
 
 ```diff
   server.AddCommands(rootCmd, simapp.DefaultNodeHome, newApp, createSimAppAndExport, addModuleInitFlags)
-	++ server.AddTestnetCreatorCommand(rootCmd, simapp.DefaultNodeHome, newTestnetApp, addModuleInitFlags)
++ server.AddTestnetCreatorCommand(rootCmd, newTestnetApp, addModuleInitFlags)
 ```
 
-Next we will add a newTestnetApp helper function:
+Next, add a `newTestnetApp` helper function. The `dbm` alias below refers to
+`github.com/cosmos/cosmos-db`, matching `servertypes.AppCreator`:
 
-```diff
+```go
 // newTestnetApp starts by running the normal newApp method. From there, the app interface returned is modified in order
 // for a testnet to be created from the provided app.
-func newTestnetApp(logger log.Logger, db cometbftdb.DB, traceStore io.Writer, appOpts servertypes.AppOptions) servertypes.Application {
+func newTestnetApp(logger log.Logger, db dbm.DB, traceStore io.Writer, appOpts servertypes.AppOptions) servertypes.Application {
 	// Create an app and type cast to an SimApp
 	app := newApp(logger, db, traceStore, appOpts)
 	simApp, ok := app.(*simapp.SimApp)
@@ -233,3 +247,7 @@ func newTestnetApp(logger log.Logger, db cometbftdb.DB, traceStore io.Writer, ap
 	return simapp.InitSimAppForTestnet(simApp, newValAddr, newValPubKey, newOperatorAddress, upgradeToTrigger)
 }
 ```
+
+Once the binary includes this callback, use the
+[operator instructions](../../user/run-node/05-run-testnet.md#create-a-testnet-from-existing-state)
+to prepare the copied home, confirm conversion, and restart the resulting testnet.
