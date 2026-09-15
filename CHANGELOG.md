@@ -36,6 +36,21 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 # Changelog
 
+## [Unreleased](https://github.com/manifest-network/cosmos-sdk/compare/v0.50.14-liftedinit.1...release/v0.50.14-liftedinit)
+
+### Improvements
+
+* (build) [#3](https://github.com/manifest-network/cosmos-sdk/pull/3) Raise the minimum Go version from 1.21 to 1.23.0, including the new loop-variable semantics, and update `golang.org/x/crypto` from v0.27.0 to v0.41.0 with its required dependencies across the root, `simapp`, and `tests` modules.
+
+### CLI Breaking
+
+* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) `in-place-testnet` requires a complete validator key file and an existing reset signing-state file; operators must supply a fresh key. Missing validator keys are no longer generated automatically. Preflight rejects unsupported or inconsistent source heights. Absolute address-book paths must be clean file paths without trailing separators or redundant components. After preflight, it deletes the configured consensus WAL and its numbered rotation files.
+
+### Bug Fixes
+
+* (crypto) [#3](https://github.com/manifest-network/cosmos-sdk/pull/3) Replace the unmaintained OpenPGP armor dependency with `github.com/ProtonMail/go-crypto` v1.4.1 to remove calls affected by GO-2026-5932. Preserve key-export compatibility and checksum checks for accidental corruption, continue accepting missing checksums, and make multi-header encoding deterministic.
+* (server) [#4](https://github.com/manifest-network/cosmos-sdk/pull/4) Reconstruct in-place testnet commits with vote extensions, update the cached genesis chain ID, and clear pending source-chain evidence while preserving committed evidence history. Honor the configured address-book path and create missing parent directories. Preflight rejects empty address-book paths, inspection errors other than missing paths, and directory targets.
+
 ## [v0.50.14](https://github.com/cosmos/cosmos-sdk/releases/tag/v0.50.14) - 2025-07-08
 
 ### Bug Fixes
