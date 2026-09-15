@@ -905,7 +905,7 @@ func TestImportPubKey(t *testing.T) {
 			uid:         "modified",
 			backend:     BackendTest,
 			armor:       "-----BEGIN TENDERMINT PUBLIC KEY-----\nversion: 0.0.1\ntype: secp256k1\n\nCh8vY29zbW8zLmNyeXB0by5zZWNwMjU2azEuUHViS2V5EiMKIQOlcgxiZM4cR0LA\nwum483+L6zRnXC6zEKtQ4FEa6z0VrA==\n=CqBG\n-----END TENDERMINT PUBLIC KEY-----",
-			expectedErr: fmt.Errorf("no concrete type registered for type URL /cosmo3.crypto.secp256k1.PubKey against interface *types.PubKey"),
+			expectedErr: fmt.Errorf("couldn't unarmor bytes: openpgp: invalid data: armor invalid"),
 		},
 		{
 			name:        "empty armor",
@@ -932,6 +932,43 @@ func TestImportPubKey(t *testing.T) {
 			} else {
 				require.Equal(t, err, tt.expectedErr)
 			}
+		})
+	}
+}
+
+func TestImportPubKeyRejectsCorruptedKeyPayload(t *testing.T) {
+	cdc := getCodec()
+	pubKey := secp256k1.GenPrivKeyFromSecret([]byte("armor checksum regression")).PubKey()
+	payload, err := cdc.MarshalInterface(pubKey)
+	require.NoError(t, err)
+	original := crypto.ArmorPubKeyBytes(payload, "secp256k1")
+	originalFooter := original[strings.LastIndex(original, "\n="):]
+
+	changedKey := append([]byte(nil), pubKey.Bytes()...)
+	changedKey[len(changedKey)-1] ^= 1
+	testCases := []struct {
+		name string
+		key  []byte
+	}{
+		{name: "changed public key bytes", key: changedKey},
+		{name: "truncated public key", key: pubKey.Bytes()[:secp256k1.PubKeySize-1]},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			corruptedPayload, err := cdc.MarshalInterface(&secp256k1.PubKey{Key: tc.key})
+			require.NoError(t, err)
+			corrupted := crypto.ArmorPubKeyBytes(corruptedPayload, "secp256k1")
+			// Keep the original checksum to model corrupted key bytes in transit.
+			corrupted = corrupted[:strings.LastIndex(corrupted, "\n=")] + originalFooter
+
+			kb := NewInMemory(cdc)
+			require.NotPanics(t, func() {
+				err = kb.ImportPubKey("corrupted", corrupted)
+			})
+			require.EqualError(t, err, "couldn't unarmor bytes: openpgp: invalid data: armor invalid")
+			records, err := kb.List()
+			require.NoError(t, err)
+			require.Empty(t, records)
 		})
 	}
 }

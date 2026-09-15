@@ -1,11 +1,15 @@
 package crypto
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"strings"
 
+	// Keep the maintained fork: x/crypto/openpgp/armor is affected by GO-2026-5932.
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/cometbft/cometbft/crypto"
 	"golang.org/x/crypto/argon2"
@@ -259,7 +263,7 @@ func decryptPrivKey(saltBytes, encBytes []byte, passphrase, kdf string) (privKey
 
 func EncodeArmor(blockType string, headers map[string]string, data []byte) string {
 	buf := new(bytes.Buffer)
-	w, err := armor.Encode(buf, blockType, headers)
+	w, err := armor.EncodeWithChecksumOption(buf, blockType, headers, true)
 	if err != nil {
 		panic(fmt.Errorf("could not encode ascii armor: %s", err))
 	}
@@ -275,14 +279,74 @@ func EncodeArmor(blockType string, headers map[string]string, data []byte) strin
 }
 
 func DecodeArmor(armorStr string) (blockType string, headers map[string]string, data []byte, err error) {
-	buf := bytes.NewBufferString(armorStr)
+	source := strings.NewReader(armorStr)
+	// armor.Decode reuses this buffered reader. Record its position after the
+	// selected block's headers so skipped blocks cannot supply its checksum.
+	buf := bufio.NewReaderSize(source, 100)
 	block, err := armor.Decode(buf)
 	if err != nil {
 		return "", nil, nil, err
 	}
+	bodyOffset := len(armorStr) - source.Len() - buf.Buffered()
 	data, err = io.ReadAll(block.Body)
 	if err != nil {
 		return "", nil, nil, err
 	}
+	if err := verifyArmorChecksum(armorStr[bodyOffset:], data); err != nil {
+		return "", nil, nil, err
+	}
 	return block.Type, block.Header, data, nil
+}
+
+// verifyArmorChecksum preserves the legacy accidental-corruption check for SDK
+// key blocks, whose public-key payloads have no independent integrity check.
+// A missing CRC24 remains valid; a present CRC24 must match the decoded data.
+// CRC24 is not authentication and does not protect against deliberate changes.
+func verifyArmorChecksum(body string, data []byte) error {
+	for len(body) > 0 {
+		line, rest, _ := strings.Cut(body, "\n")
+		body = rest
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "-----END ") {
+			return nil
+		}
+		if len(line) != 5 || line[0] != '=' {
+			continue
+		}
+
+		checksum, err := base64.StdEncoding.DecodeString(line[1:])
+		if err != nil {
+			return err
+		}
+		if len(checksum) != 3 {
+			return armor.ArmorCorrupt
+		}
+		expected := uint32(checksum[0])<<16 | uint32(checksum[1])<<8 | uint32(checksum[2])
+		if crc24(data) != expected {
+			return armor.ArmorCorrupt
+		}
+
+		// The legacy decoder also requires an END line after a present CRC24.
+		end, _, _ := strings.Cut(body, "\n")
+		if !strings.HasPrefix(strings.TrimSpace(end), "-----END ") {
+			return armor.ArmorCorrupt
+		}
+		return nil
+	}
+	return nil
+}
+
+// crc24 computes the armor checksum defined in RFC 4880 section 6.1.
+func crc24(data []byte) uint32 {
+	crc := uint32(0xb704ce)
+	for _, b := range data {
+		crc ^= uint32(b) << 16
+		for range 8 {
+			crc <<= 1
+			if crc&0x1000000 != 0 {
+				crc ^= 0x1864cfb
+			}
+		}
+	}
+	return crc & 0xffffff
 }
