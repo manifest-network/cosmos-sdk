@@ -363,7 +363,6 @@ func (pva PeriodicVestingAccount) Validate() error {
 	}
 	endTime := pva.StartTime
 	var accumulated vestingcoins.Accumulator
-	accumulated.Add(nil)
 	for i, p := range pva.VestingPeriods {
 		if p.Length < 0 {
 			return fmt.Errorf("period #%d has a negative length: %d", i, p.Length)

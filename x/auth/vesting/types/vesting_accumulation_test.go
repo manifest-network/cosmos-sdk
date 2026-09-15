@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"cosmossdk.io/math"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	"github.com/cosmos/cosmos-sdk/x/auth/vesting/types"
@@ -142,7 +143,7 @@ func BenchmarkPeriodicVestingAccumulation(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			b.ReportMetric(float64(account.Size()), "account-bytes")
-			for range b.N {
+			for i := 0; i < b.N; i++ {
 				if len(account.LockedCoins(at)) != 1 {
 					b.Fatal("expected only the last period to remain locked")
 				}
@@ -169,7 +170,7 @@ func BenchmarkPeriodicVestingValidation(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			b.ReportMetric(float64(account.Size()), "account-bytes")
-			for range b.N {
+			for i := 0; i < b.N; i++ {
 				if err := account.Validate(); err != nil {
 					b.Fatal(err)
 				}

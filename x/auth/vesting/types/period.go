@@ -35,6 +35,7 @@ func (p Periods) TotalDuration() time.Duration {
 // TotalAmount returns the sum of coins for the periods.
 func (p Periods) TotalAmount() sdk.Coins {
 	var total vestingcoins.Accumulator
+	// Preserve the non-nil empty result for an empty schedule.
 	total.Add(nil)
 	for _, period := range p {
 		total.Add(period.Amount)
